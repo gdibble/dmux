@@ -1,4 +1,5 @@
 import type { AgentName } from './utils/agentLaunch.js';
+import type { NotificationSoundId } from './utils/notificationSounds.js';
 
 // Agent status with new analyzing state
 export type AgentStatus = 'idle' | 'analyzing' | 'waiting' | 'working';
@@ -14,17 +15,25 @@ export interface PotentialHarm {
   description?: string;
 }
 
+export interface MergeTargetReference {
+  slug?: string;
+  branchName: string;
+  worktreePath?: string;
+}
+
 export interface DmuxPane {
   id: string;
   slug: string;
   branchName?: string; // Git branch name (may differ from slug when branchPrefix is set)
   prompt: string;
   paneId: string;
+  hidden?: boolean; // Pane is detached from the active dmux window but still running
   projectRoot?: string; // Main repository root this pane belongs to
   projectName?: string; // Display name for pane's project
   type?: 'worktree' | 'shell';  // Type of pane (defaults to 'worktree' for backward compat)
-  shellType?: string;  // Shell type for shell panes (bash, zsh, fish, etc)
+  shellType?: string;  // Shell type for shell panes (bash, zsh, fish, fb, etc)
   worktreePath?: string;
+  browserPath?: string; // Root path when a shell pane is a dmux file browser
   testWindowId?: string;  // Background window for tests
   testStatus?: 'running' | 'passed' | 'failed';
   testOutput?: string;
@@ -33,6 +42,7 @@ export interface DmuxPane {
   devUrl?: string;        // Detected dev server URL
   agent?: AgentName;
   agentStatus?: AgentStatus;  // Agent working/attention status
+  needsAttention?: boolean; // Pane has settled and is waiting on the user
   lastAgentCheck?: number;  // Timestamp of last status check
   lastDeterministicStatus?: 'ambiguous' | 'working';  // For LLM detection coordination
   llmRequestId?: string;  // Track active LLM request
@@ -46,6 +56,8 @@ export interface DmuxPane {
   autopilot?: boolean;
   // Error message if pane analyzer encounters issues
   analyzerError?: string;
+  // Merge ancestry for sub-worktrees; first entry is the immediate parent target.
+  mergeTargetChain?: MergeTargetReference[];
 }
 
 export interface PanePosition {
@@ -81,6 +93,8 @@ export interface DmuxSettings {
   defaultAgent?: AgentName | '';
   // Which agents appear in new-pane selection
   enabledAgents?: AgentName[];
+  // Which macOS helper notification sounds are eligible for random selection
+  enabledNotificationSounds?: NotificationSoundId[];
   // Tmux hooks for event-driven updates (low CPU)
   // true = use hooks, false = use polling, undefined = not yet asked
   useTmuxHooks?: boolean;

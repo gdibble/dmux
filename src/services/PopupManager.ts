@@ -10,7 +10,7 @@ import { LogService } from "./LogService.js"
 import { TmuxService } from "./TmuxService.js"
 import { SETTING_DEFINITIONS } from "../utils/settingsManager.js"
 import type { DmuxPane, ProjectSettings } from "../types.js"
-import { getAvailableActions, type PaneAction } from "../actions/index.js"
+import { getPaneMenuActions, type PaneMenuActionId } from "../actions/index.js"
 import { INPUT_IGNORE_DELAY } from "../constants/timing.js"
 import {
   getAgentDefinitions,
@@ -18,7 +18,14 @@ import {
   resolveEnabledAgentsSelection,
   type AgentName,
 } from "../utils/agentLaunch.js"
+import {
+  getNotificationSoundDefinitions,
+  resolveNotificationSoundsSelection,
+  type NotificationSoundId,
+} from "../utils/notificationSounds.js"
 import { resolveDistPath } from "../utils/runtimePaths.js"
+import { getPaneProjectRoot } from "../utils/paneProject.js"
+import type { TrackProjectActivity } from "../types/activity.js"
 
 export interface PopupManagerConfig {
   sidebarWidth: number
@@ -31,6 +38,7 @@ export interface PopupManagerConfig {
   availableAgents: AgentName[]
   settingsManager: any
   projectSettings: ProjectSettings
+  trackProjectActivity: TrackProjectActivity
 }
 
 interface PopupOptions {
@@ -82,6 +90,7 @@ export class PopupManager {
   private config: PopupManagerConfig
   private setStatusMessage: (msg: string) => void
   private setIgnoreInput: (ignore: boolean) => void
+  private trackProjectActivity: TrackProjectActivity
 
   constructor(
     config: PopupManagerConfig,
@@ -91,6 +100,7 @@ export class PopupManager {
     this.config = config
     this.setStatusMessage = setStatusMessage
     this.setIgnoreInput = setIgnoreInput
+    this.trackProjectActivity = config.trackProjectActivity
   }
 
   /**
@@ -127,6 +137,10 @@ export class PopupManager {
     setTimeout(() => this.setIgnoreInput(false), INPUT_IGNORE_DELAY)
   }
 
+  private resolveActivityProjectRoot(projectRoot?: string): string {
+    return projectRoot || this.config.projectRoot
+  }
+
   /**
    * Generic popup launcher with common logic
    */
@@ -134,45 +148,45 @@ export class PopupManager {
     scriptName: string,
     args: string[],
     options: PopupOptions,
-    tempData?: any
+    tempData?: any,
+    projectRoot?: string
   ): Promise<PopupResult<T>> {
     const popupScriptPath = this.getPopupScriptPath(scriptName)
     let tempFile: string | null = null
 
     try {
-      // Write temp file if data provided
-      if (tempData !== undefined) {
-        tempFile = `/tmp/dmux-${scriptName.replace(".js", "")}-${Date.now()}.json`
-        await fs.writeFile(tempFile, JSON.stringify(tempData))
-        args = [tempFile, ...args]
-      }
+      const popupHandle = await this.trackProjectActivity(async () => {
+        // Write temp file if data provided
+        if (tempData !== undefined) {
+          tempFile = `/tmp/dmux-${scriptName.replace(".js", "")}-${Date.now()}.json`
+          await fs.writeFile(tempFile, JSON.stringify(tempData))
+          args = [tempFile, ...args]
+        }
 
-      // Get positioning
-      let positioning
-      if (options.positioning === "large") {
-        // Use async dimension fetching for better performance
-        const tmuxService = TmuxService.getInstance()
-        const dims = await tmuxService.getAllDimensions()
-        positioning = POPUP_POSITIONING.large(
-          this.config.sidebarWidth,
-          dims.clientWidth,
-          dims.clientHeight
-        )
-      } else if (options.positioning === "centered") {
-        positioning = POPUP_POSITIONING.centeredWithSidebar(
-          this.config.sidebarWidth
-        )
-      } else {
-        positioning = POPUP_POSITIONING.standard(this.config.sidebarWidth)
-      }
+        let positioning
+        if (options.positioning === "large") {
+          const tmuxService = TmuxService.getInstance()
+          const dims = await tmuxService.getAllDimensions()
+          positioning = POPUP_POSITIONING.large(
+            this.config.sidebarWidth,
+            dims.clientWidth,
+            dims.clientHeight
+          )
+        } else if (options.positioning === "centered") {
+          positioning = POPUP_POSITIONING.centeredWithSidebar(
+            this.config.sidebarWidth
+          )
+        } else {
+          positioning = POPUP_POSITIONING.standard(this.config.sidebarWidth)
+        }
 
-      // Launch popup
-      const popupHandle = launchNodePopupNonBlocking<T>(popupScriptPath, args, {
-        ...positioning,
-        ...(options.width !== undefined && { width: options.width }),
-        ...(options.height !== undefined && { height: options.height }),
-        title: options.title,
-      })
+        return launchNodePopupNonBlocking<T>(popupScriptPath, args, {
+          ...positioning,
+          ...(options.width !== undefined && { width: options.width }),
+          ...(options.height !== undefined && { height: options.height }),
+          title: options.title,
+        })
+      }, this.resolveActivityProjectRoot(projectRoot))
 
       // Wait for result
       const result = await popupHandle.resultPromise
@@ -240,7 +254,9 @@ export class PopupManager {
           height: popupHeight,
           title: `  ✨ New Pane — ${projectName}  `,
           positioning: "centered",
-        }
+        },
+        undefined,
+        projectPath
       )
 
       this.ignoreInputBriefly()
@@ -251,14 +267,19 @@ export class PopupManager {
     }
   }
 
-  async launchKebabMenuPopup(pane: DmuxPane): Promise<PaneAction | null> {
+  async launchKebabMenuPopup(
+    pane: DmuxPane,
+    panes: DmuxPane[]
+  ): Promise<PaneMenuActionId | null> {
     if (!this.checkPopupSupport()) return null
 
     try {
-      const actions = getAvailableActions(
+      const actions = getPaneMenuActions(
         pane,
+        panes,
         this.config.projectSettings,
-        this.config.isDevMode
+        this.config.isDevMode,
+        this.config.projectRoot
       )
       const result = await this.launchPopup<string>(
         "kebabMenuPopup.js",
@@ -267,7 +288,9 @@ export class PopupManager {
           width: 60,
           height: Math.min(20, actions.length + 5),
           title: `Menu: ${pane.slug}`,
-        }
+        },
+        undefined,
+        getPaneProjectRoot(pane, this.config.projectRoot)
       )
 
       const actionId = this.handleResult(
@@ -281,7 +304,7 @@ export class PopupManager {
           this.showTempMessage(error)
         }
       )
-      return actionId as PaneAction | null
+      return actionId as PaneMenuActionId | null
     } catch (error: any) {
       this.showTempMessage(`Failed to launch popup: ${error.message}`)
       return null
@@ -292,7 +315,8 @@ export class PopupManager {
     title: string,
     message: string,
     yesLabel?: string,
-    noLabel?: string
+    noLabel?: string,
+    projectRoot?: string
   ): Promise<boolean> {
     if (!this.checkPopupSupport()) return false
 
@@ -313,7 +337,8 @@ export class PopupManager {
           height: calculatedHeight,
           title: title || "Confirm",
         },
-        { title, message, yesLabel, noLabel }
+        { title, message, yesLabel, noLabel },
+        projectRoot
       )
 
       return this.handleResult(result) ?? false
@@ -323,7 +348,7 @@ export class PopupManager {
     }
   }
 
-  async launchAgentChoicePopup(): Promise<AgentName[] | null> {
+  async launchAgentChoicePopup(projectRoot?: string): Promise<AgentName[] | null> {
     if (!this.checkPopupSupport()) return null
 
     try {
@@ -345,7 +370,9 @@ export class PopupManager {
           width: 72,
           height: popupHeight,
           title: "Select Agent(s)",
-        }
+        },
+        undefined,
+        projectRoot
       )
 
       return this.handleResult(result)
@@ -356,12 +383,14 @@ export class PopupManager {
   }
 
   async launchHooksPopup(
-    onEditHooks: () => Promise<void>
+    onEditHooks: () => Promise<void>,
+    projectRoot?: string
   ): Promise<void> {
     if (!this.checkPopupSupport()) return
 
     try {
       const { hasHook } = await import("../utils/hooks.js")
+      const hooksProjectRoot = this.resolveActivityProjectRoot(projectRoot)
       const allHookTypes = [
         "before_pane_create",
         "pane_created",
@@ -379,7 +408,7 @@ export class PopupManager {
       const hooks = allHookTypes.map((hookName) => ({
         name: hookName,
         active: hasHook(
-          this.config.projectRoot || process.cwd(),
+          hooksProjectRoot || process.cwd(),
           hookName as any
         ),
       }))
@@ -391,7 +420,9 @@ export class PopupManager {
           width: 70,
           height: 24,
           title: "🪝 Manage Hooks",
-        }
+        },
+        undefined,
+        projectRoot
       )
 
       const data = this.handleResult(result)
@@ -405,7 +436,7 @@ export class PopupManager {
     }
   }
 
-  async launchLogsPopup(): Promise<void> {
+  async launchLogsPopup(projectRoot?: string): Promise<void> {
     if (!this.checkPopupSupport()) return
 
     try {
@@ -423,7 +454,8 @@ export class PopupManager {
           title: "🪵 dmux Logs",
           positioning: "large",
         },
-        logsData
+        logsData,
+        projectRoot
       )
 
       if (result.success) {
@@ -440,11 +472,14 @@ export class PopupManager {
     }
   }
 
-  async launchShortcutsPopup(hasSidebarLayout: boolean): Promise<"hooks" | null> {
+  async launchShortcutsPopup(
+    hasSidebarLayout: boolean,
+    projectRoot?: string
+  ): Promise<"hooks" | null> {
     if (!this.checkPopupSupport()) return null
 
     try {
-      const popupHeight = this.config.isDevMode ? 21 : 20
+      const popupHeight = this.config.isDevMode ? 22 : 21
       const result = await this.launchPopup<{ action?: "hooks" }>(
         "shortcutsPopup.js",
         [],
@@ -456,7 +491,8 @@ export class PopupManager {
         {
           hasSidebarLayout,
           isDevMode: this.config.isDevMode,
-        }
+        },
+        projectRoot
       )
 
       this.ignoreInputBriefly()
@@ -469,7 +505,8 @@ export class PopupManager {
   }
 
   async launchSettingsPopup(
-    onLaunchHooks: () => Promise<void>
+    onLaunchHooks: () => Promise<void>,
+    projectRoot?: string
   ): Promise<
     | { key: string; value: any; scope: "global" | "project" }
     | { updates: Array<{ key: string; value: any; scope: "global" | "project" }> }
@@ -503,7 +540,8 @@ export class PopupManager {
           projectSettings: this.config.settingsManager.getProjectSettings(),
           projectRoot: this.config.projectRoot,
           controlPaneId: this.config.controlPaneId,
-        }
+        },
+        projectRoot
       )
 
       if (result.success) {
@@ -523,9 +561,17 @@ export class PopupManager {
         }
 
         if (data.action === "enabledAgents") {
-          const enabledAgentsUpdate = await this.launchEnabledAgentsPopup()
+          const enabledAgentsUpdate = await this.launchEnabledAgentsPopup(projectRoot)
           if (enabledAgentsUpdate) {
             pendingUpdates.push(enabledAgentsUpdate)
+          }
+          return pendingUpdates.length > 0 ? { updates: pendingUpdates } : null
+        }
+
+        if (data.action === "enabledNotificationSounds") {
+          const notificationSoundsUpdate = await this.launchNotificationSoundsPopup(projectRoot)
+          if (notificationSoundsUpdate) {
+            pendingUpdates.push(notificationSoundsUpdate)
           }
           return pendingUpdates.length > 0 ? { updates: pendingUpdates } : null
         }
@@ -553,7 +599,9 @@ export class PopupManager {
     }
   }
 
-  async launchEnabledAgentsPopup(): Promise<{
+  async launchEnabledAgentsPopup(
+    projectRoot?: string
+  ): Promise<{
     key: "enabledAgents";
     value: AgentName[];
     scope: "global" | "project";
@@ -583,7 +631,8 @@ export class PopupManager {
         {
           agents: definitions,
           enabledAgents: configuredEnabled,
-        }
+        },
+        projectRoot
       )
 
       const data = this.handleResult(result)
@@ -592,6 +641,56 @@ export class PopupManager {
       return {
         key: "enabledAgents",
         value: data.enabledAgents,
+        scope: data.scope,
+      }
+    } catch (error: any) {
+      this.showTempMessage(`Failed to launch popup: ${error.message}`)
+      return null
+    }
+  }
+
+  async launchNotificationSoundsPopup(
+    projectRoot?: string
+  ): Promise<{
+    key: "enabledNotificationSounds";
+    value: NotificationSoundId[];
+    scope: "global" | "project";
+  } | null> {
+    if (!this.checkPopupSupport()) return null
+
+    try {
+      const settings = this.config.settingsManager.getSettings()
+      const configuredEnabled = resolveNotificationSoundsSelection(settings.enabledNotificationSounds)
+      const definitions = getNotificationSoundDefinitions().map((definition) => ({
+        id: definition.id,
+        label: definition.label,
+        defaultEnabled: definition.defaultEnabled,
+      }))
+
+      const result = await this.launchPopup<{
+        enabledNotificationSounds: NotificationSoundId[];
+        scope: "global" | "project";
+      }>(
+        "notificationSoundsPopup.js",
+        [],
+        {
+          width: 76,
+          height: Math.min(30, definitions.length + 12),
+          title: "Notification Sounds",
+        },
+        {
+          sounds: definitions,
+          enabledNotificationSounds: configuredEnabled,
+        },
+        projectRoot
+      )
+
+      const data = this.handleResult(result)
+      if (!data) return null
+
+      return {
+        key: "enabledNotificationSounds",
+        value: data.enabledNotificationSounds,
         scope: data.scope,
       }
     } catch (error: any) {
@@ -611,7 +710,8 @@ export class PopupManager {
       danger?: boolean
       default?: boolean
     }>,
-    data?: unknown
+    data?: unknown,
+    projectRoot?: string
   ): Promise<string | null> {
     if (!this.checkPopupSupport()) return null
 
@@ -630,7 +730,8 @@ export class PopupManager {
             message,
             options,
             ...data,
-          }
+          },
+          projectRoot
         )
 
         return this.handleResult(result)
@@ -659,7 +760,8 @@ export class PopupManager {
               description: option.description,
               default: option.default,
             })),
-          }
+          },
+          projectRoot
         )
 
         return this.handleResult(result)
@@ -687,7 +789,8 @@ export class PopupManager {
           height: calculatedHeight,
           title: title || "Choose Option",
         },
-        { title, message, options }
+        { title, message, options },
+        projectRoot
       )
 
       return this.handleResult(result)
@@ -698,7 +801,8 @@ export class PopupManager {
   }
 
   async launchProjectSelectPopup(
-    defaultValue?: string
+    defaultValue?: string,
+    projectRoot?: string
   ): Promise<string | null> {
     if (!this.checkPopupSupport()) return null
 
@@ -712,7 +816,8 @@ export class PopupManager {
           title: "  Select Project  ",
           positioning: "centered",
         },
-        { defaultValue: defaultValue || "" }
+        { defaultValue: defaultValue || "" },
+        projectRoot || defaultValue
       )
 
       this.ignoreInputBriefly()
@@ -727,7 +832,8 @@ export class PopupManager {
     title: string,
     message: string,
     placeholder?: string,
-    defaultValue?: string
+    defaultValue?: string,
+    projectRoot?: string
   ): Promise<string | null> {
     if (!this.checkPopupSupport()) return null
 
@@ -740,7 +846,8 @@ export class PopupManager {
           height: 15,
           title: title || "Input",
         },
-        { title, message, placeholder, defaultValue }
+        { title, message, placeholder, defaultValue },
+        projectRoot
       )
 
       return this.handleResult(result)
@@ -753,7 +860,8 @@ export class PopupManager {
   async launchProgressPopup(
     message: string,
     type: "info" | "success" | "error" = "info",
-    timeout: number = 2000
+    timeout: number = 2000,
+    projectRoot?: string
   ): Promise<void> {
     if (!this.config.popupsSupported) {
       this.showTempMessage(message, timeout)
@@ -777,7 +885,8 @@ export class PopupManager {
           height: Math.min(15, lines + 4),
           title: titleText,
         },
-        { message, type, timeout }
+        { message, type, timeout },
+        projectRoot
       )
     } catch (error: any) {
       this.showTempMessage(message, timeout)
@@ -791,7 +900,8 @@ export class PopupManager {
       lastModified: Date
       branch: string
       hasUncommittedChanges: boolean
-    }>
+    }>,
+    projectRoot?: string
   ): Promise<{ slug: string; path: string } | null> {
     if (!this.checkPopupSupport()) return null
 
@@ -810,7 +920,8 @@ export class PopupManager {
           height: Math.min(25, worktrees.length * 3 + 8),
           title: "📂 Reopen Closed Worktree",
         },
-        { worktrees: worktreesData }
+        { worktrees: worktreesData },
+        projectRoot
       )
 
       return this.handleResult(result)

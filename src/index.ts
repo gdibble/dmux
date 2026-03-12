@@ -12,6 +12,7 @@ import { createHash } from 'crypto';
 import { createRequire } from 'module';
 import { createInterface } from 'node:readline/promises';
 import DmuxApp from './DmuxApp.js';
+import FileBrowserApp from './FileBrowserApp.js';
 import { AutoUpdater } from './services/AutoUpdater.js';
 import { StateManager } from './shared/StateManager.js';
 import { LogService } from './services/LogService.js';
@@ -26,7 +27,10 @@ import { createPane } from './utils/paneCreation.js';
 import { SettingsManager } from './utils/settingsManager.js';
 import { atomicWriteJson } from './utils/atomicWrite.js';
 import { buildDevWatchCommand, buildDevWatchRespawnCommand } from './utils/devWatchCommand.js';
+import { shouldUseQuietDevWatchExit } from './utils/devWatchExit.js';
 import { buildPaneExitedHookCommandForSession } from './utils/tmuxHookCommands.js';
+import { ensureTmuxRuntimeCompatibility } from './utils/tmuxRuntimeCompatibility.js';
+import { claimProcessShutdown } from './utils/processShutdown.js';
 import {
   resolveEnabledAgentsSelection,
   type AgentName,
@@ -42,6 +46,10 @@ interface ExistingSessionContext {
   sessionProjectRoot: string;
   sessionProjectName: string;
   sessionConfigPath: string;
+}
+
+function isFilesOnlyMode(): boolean {
+  return process.argv.slice(2).includes('--files-only');
 }
 
 class Dmux {
@@ -113,6 +121,10 @@ class Dmux {
       : null;
     const sessionNameForCurrentTmux = currentTmuxSessionName || this.sessionName;
 
+    if (inTmux) {
+      ensureTmuxRuntimeCompatibility(sessionNameForCurrentTmux);
+    }
+
     // Running dmux from another project while already inside a dmux session:
     // offer to attach this project to the current sidebar/session instead.
     if (
@@ -182,6 +194,8 @@ class Dmux {
       }
 
       if (sessionExists) {
+        ensureTmuxRuntimeCompatibility(this.sessionName);
+        this.applySessionPaneBorderOptions(this.sessionName, 'pipe');
         // Existing session:
         // In dev mode, always ensure watcher loop is running from the intended source.
         if (isDev) {
@@ -203,16 +217,11 @@ class Dmux {
         // Expected - session doesn't exist, create new one
         // Create new session first
         execSync(`tmux new-session -d -s ${this.sessionName}`, { stdio: 'inherit' });
+        ensureTmuxRuntimeCompatibility(this.sessionName);
         // Batch all session configuration commands into a single tmux call for faster startup
         // This reduces 5 process spawns to 1, significantly improving startup time
-        const sessionOptions = [
-          `set-option -t ${this.sessionName} pane-border-status top`,
-          `set-option -t ${this.sessionName} pane-active-border-style "fg=colour${TMUX_COLORS.activeBorder}"`,
-          `set-option -t ${this.sessionName} pane-border-style "fg=colour${TMUX_COLORS.inactiveBorder}"`,
-          `set-option -t ${this.sessionName} pane-border-format " #{pane_title} "`,
-          `select-pane -t ${this.sessionName} -T "dmux"`,
-        ].join(' \\; ');
-        execSync(`tmux ${sessionOptions}`, { stdio: 'inherit' });
+        this.applySessionPaneBorderOptions(this.sessionName, 'inherit');
+        execSync(`tmux select-pane -t ${this.sessionName} -T "dmux"`, { stdio: 'inherit' });
         // Send dmux command to the new session (use dev command if in dev mode)
         // Determine the dmux command to use
         let dmuxCommand: string;
@@ -250,6 +259,13 @@ class Dmux {
     // Setting the title can cause visual artifacts in some tmux configurations
     // Original code: execSync(`tmux select-pane -T "dmux v${version} - ${project}"`)
     // See: Title updates are currently handled by enforcePaneTitles() in usePaneSync.ts
+
+    try {
+      const activeSessionName = this.getCurrentTmuxSessionName() || this.sessionName;
+      this.applySessionPaneBorderOptions(activeSessionName, 'pipe');
+    } catch {
+      // Best effort - dmux still works without reapplying border format here.
+    }
 
     // Get current pane ID (control pane for left sidebar)
     let controlPaneId: string | undefined;
@@ -1093,6 +1109,17 @@ class Dmux {
     return this.autoUpdater;
   }
 
+  private applySessionPaneBorderOptions(sessionName: string, stdio: 'pipe' | 'inherit' = 'pipe') {
+    const sessionOptions = [
+      `set-option -t ${sessionName} pane-border-status top`,
+      `set-option -t ${sessionName} pane-active-border-style "fg=colour${TMUX_COLORS.activeBorder}"`,
+      `set-option -t ${sessionName} pane-border-style "fg=colour${TMUX_COLORS.inactiveBorder}"`,
+      `set-option -t ${sessionName} pane-border-format " #{?@dmux_attention,#[bold]![ready] #[default],}#{pane_title} "`,
+    ].join(' \\; ');
+
+    execSync(`tmux ${sessionOptions}`, { stdio });
+  }
+
   private setupResizeHook(sessionName: string = this.sessionName) {
     try {
       // Set up session-specific hook that sends SIGUSR1 to dmux process on resize
@@ -1147,11 +1174,25 @@ class Dmux {
   }
 
   private setupGlobalSignalHandlers() {
-    const cleanTerminalExit = async () => {
+    let isCleaningUp = false;
+
+    const cleanTerminalExit = (signal?: NodeJS.Signals) => {
+      if (isCleaningUp) {
+        return;
+      }
+      if (!claimProcessShutdown('signal-handler')) {
+        return;
+      }
+      isCleaningUp = true;
+
       // Clean up hooks
       if (process.env.TMUX) {
         this.cleanupResizeHook();
         this.cleanupPaneSplitHook();
+      }
+
+      if (shouldUseQuietDevWatchExit(signal)) {
+        process.exit(0);
       }
 
       // Clear screen multiple times to ensure no artifacts
@@ -1164,7 +1205,6 @@ class Dmux {
         try {
           const tmuxService = TmuxService.getInstance();
           tmuxService.clearHistorySync();
-          await tmuxService.sendKeys('', 'C-l');
         } catch {
           // Intentionally silent - cleanup is best-effort
         }
@@ -1179,8 +1219,12 @@ class Dmux {
     };
 
     // Handle Ctrl+C and SIGTERM
-    process.on('SIGINT', cleanTerminalExit);
-    process.on('SIGTERM', cleanTerminalExit);
+    process.on('SIGINT', () => {
+      cleanTerminalExit('SIGINT');
+    });
+    process.on('SIGTERM', () => {
+      cleanTerminalExit('SIGTERM');
+    });
 
     // Handle SIGUSR2 for pane split detection
     // This signal is sent by tmux hook when a new pane is created
@@ -1206,6 +1250,11 @@ class Dmux {
 
 // Validate system requirements before starting
 (async () => {
+  if (isFilesOnlyMode()) {
+    render(React.createElement(FileBrowserApp), { exitOnCtrlC: false });
+    return;
+  }
+
   const validationResult = await validateSystemRequirements();
   printValidationResults(validationResult);
 

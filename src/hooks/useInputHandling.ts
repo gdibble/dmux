@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react"
+import path from "path"
 import { useInput } from "ink"
 import type { DmuxPane } from "../types.js"
 import { StateManager } from "../shared/StateManager.js"
@@ -8,19 +9,29 @@ import {
   STATUS_MESSAGE_DURATION_LONG,
   ANIMATION_DELAY,
 } from "../constants/timing.js"
-import { PaneAction } from "../actions/index.js"
+import {
+  isPaneAction,
+  PaneAction,
+  TOGGLE_PANE_VISIBILITY_ACTION,
+} from "../actions/index.js"
 import { getMainBranch, getOrphanedWorktrees } from "../utils/git.js"
 import { enforceControlPaneSize } from "../utils/tmux.js"
 import { SIDEBAR_WIDTH } from "../utils/layoutManager.js"
 import { suggestCommand } from "../utils/commands.js"
 import type { PopupManager } from "../services/PopupManager.js"
-import { getPaneProjectRoot } from "../utils/paneProject.js"
+import { getPaneProjectName, getPaneProjectRoot } from "../utils/paneProject.js"
 import {
   getProjectActionByIndex,
   type ProjectActionItem,
 } from "../utils/projectActions.js"
 import { createShellPane, getNextDmuxId } from "../utils/shellPaneDetection.js"
 import type { AgentName } from "../utils/agentLaunch.js"
+import {
+  getBulkVisibilityAction,
+  getProjectVisibilityAction,
+  partitionPanesByProject,
+} from "../utils/paneVisibility.js"
+import { buildFilesOnlyCommand } from "../utils/dmuxCommand.js"
 
 // Type for the action system returned by useActionSystem hook
 interface ActionSystem {
@@ -72,6 +83,7 @@ interface UseInputHandlingParams {
   copyNonGitFiles: (worktreePath: string, sourceProjectRoot?: string) => Promise<void>
   runCommandInternal: (type: "test" | "dev", pane: DmuxPane) => Promise<void>
   handlePaneCreationWithAgent: (prompt: string, targetProjectRoot?: string) => Promise<void>
+  handleCreateChildWorktree: (pane: DmuxPane) => Promise<void>
   handleReopenWorktree: (slug: string, worktreePath: string, targetProjectRoot?: string) => Promise<void>
   setDevSourceFromPane: (pane: DmuxPane) => Promise<void>
   savePanes: (panes: DmuxPane[]) => Promise<void>
@@ -126,6 +138,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     copyNonGitFiles,
     runCommandInternal,
     handlePaneCreationWithAgent,
+    handleCreateChildWorktree,
     handleReopenWorktree,
     setDevSourceFromPane,
     savePanes,
@@ -247,6 +260,78 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
   }
 
+  const openFileBrowserInWorktree = async (selectedPane: DmuxPane) => {
+    if (!selectedPane.worktreePath) {
+      setStatusMessage("Cannot open file browser: this pane has no worktree")
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+      return
+    }
+
+    const existingBrowserPane = panes.find((pane) =>
+      pane.browserPath === selectedPane.worktreePath && !pane.hidden
+    )
+
+    if (existingBrowserPane) {
+      try {
+        await TmuxService.getInstance().selectPane(existingBrowserPane.paneId)
+        setStatusMessage(`File browser already open for ${selectedPane.slug}`)
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+      } catch (error: any) {
+        setStatusMessage(`Failed to focus file browser: ${error?.message || String(error)}`)
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+      }
+      return
+    }
+
+    const targetProjectRoot = getPaneProjectRoot(selectedPane, projectRoot)
+    const targetProjectName = path.basename(targetProjectRoot)
+
+    try {
+      setIsCreatingPane(true)
+      setStatusMessage(`Opening file browser for ${selectedPane.slug}...`)
+
+      const tmuxService = TmuxService.getInstance()
+      const newPaneId = await tmuxService.splitPane({
+        cwd: selectedPane.worktreePath,
+        command: buildFilesOnlyCommand(),
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, ANIMATION_DELAY))
+
+      const slugBase = `files-${path.basename(selectedPane.worktreePath)}`
+      let slug = slugBase
+      let suffix = 2
+      while (panes.some((pane) => pane.slug === slug)) {
+        slug = `${slugBase}-${suffix}`
+        suffix += 1
+      }
+
+      const browserPane: DmuxPane = {
+        id: `dmux-${getNextDmuxId(panes)}`,
+        slug,
+        prompt: "",
+        paneId: newPaneId,
+        projectRoot: targetProjectRoot,
+        projectName: targetProjectName,
+        type: "shell",
+        shellType: "fb",
+        browserPath: selectedPane.worktreePath,
+      }
+
+      await tmuxService.setPaneTitle(newPaneId, slug)
+      await savePanes([...panes, browserPane])
+      await loadPanes()
+
+      setStatusMessage(`Opened file browser for ${selectedPane.slug}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+    } catch (error: any) {
+      setStatusMessage(`Failed to open file browser: ${error?.message || String(error)}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+    } finally {
+      setIsCreatingPane(false)
+    }
+  }
+
   const handleCreatePaneInProject = async () => {
     const selectedAction = getProjectActionByIndex(projectActionItems, selectedIndex)
     const selectedPane = selectedIndex < panes.length ? panes[selectedIndex] : undefined
@@ -255,6 +340,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       : (selectedAction?.projectRoot || projectRoot)
 
     const requestedProjectPath = await popupManager.launchProjectSelectPopup(
+      defaultProjectPath,
       defaultProjectPath
     )
 
@@ -298,9 +384,255 @@ export function useInputHandling(params: UseInputHandlingParams) {
     await handlePaneCreationWithAgent(prompt, hooksProjectRoot)
   }
 
+  const refreshPaneLayout = async () => {
+    if (!controlPaneId) {
+      return
+    }
+
+    await enforceControlPaneSize(controlPaneId, SIDEBAR_WIDTH, {
+      forceLayout: true,
+      suppressLayoutLogs: true,
+    })
+  }
+
+  const getPaneShowTarget = async (excludedPaneId?: string): Promise<string | null> => {
+    const visiblePaneId = panes.find(
+      (pane) => !pane.hidden && pane.paneId !== excludedPaneId
+    )?.paneId
+    if (visiblePaneId) {
+      return visiblePaneId
+    }
+
+    if (controlPaneId) {
+      return controlPaneId
+    }
+
+    try {
+      return await TmuxService.getInstance().getCurrentPaneId()
+    } catch {
+      return null
+    }
+  }
+
+  const togglePaneVisibility = async (selectedPane: DmuxPane) => {
+    const tmuxService = TmuxService.getInstance()
+
+    try {
+      setIsCreatingPane(true)
+      setStatusMessage(selectedPane.hidden ? `Showing ${selectedPane.slug}...` : `Hiding ${selectedPane.slug}...`)
+
+      if (selectedPane.hidden) {
+        const targetPaneId = await getPaneShowTarget(selectedPane.paneId)
+        if (!targetPaneId) {
+          throw new Error("No target pane is available to show this pane")
+        }
+        await tmuxService.joinPaneToTarget(selectedPane.paneId, targetPaneId)
+      } else {
+        await tmuxService.breakPaneToWindow(
+          selectedPane.paneId,
+          `dmux-hidden-${selectedPane.id}`
+        )
+      }
+
+      await savePanes(
+        panes.map((pane) =>
+          pane.id === selectedPane.id
+            ? { ...pane, hidden: !selectedPane.hidden }
+            : pane
+        )
+      )
+      await refreshPaneLayout()
+      await loadPanes()
+
+      setStatusMessage(
+        selectedPane.hidden
+          ? `Showing ${selectedPane.slug}`
+          : `Hid ${selectedPane.slug}`
+      )
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+    } catch (error: any) {
+      setStatusMessage(`Failed to toggle pane visibility: ${error?.message || String(error)}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+    } finally {
+      setIsCreatingPane(false)
+    }
+  }
+
+  const toggleOtherPanesVisibility = async (selectedPane: DmuxPane) => {
+    const action = getBulkVisibilityAction(panes, selectedPane)
+    if (!action) {
+      setStatusMessage("No other panes to toggle")
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+      return
+    }
+
+    const targetPanes = panes.filter((pane) =>
+      pane.id !== selectedPane.id
+        && (action === "hide-others" ? !pane.hidden : pane.hidden)
+    )
+
+    if (targetPanes.length === 0) {
+      setStatusMessage("No other panes to toggle")
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+      return
+    }
+
+    const tmuxService = TmuxService.getInstance()
+    const hidden = action === "hide-others"
+
+    try {
+      setIsCreatingPane(true)
+      setStatusMessage(hidden ? "Hiding other panes..." : "Showing other panes...")
+
+      for (const pane of targetPanes) {
+        if (hidden) {
+          await tmuxService.breakPaneToWindow(
+            pane.paneId,
+            `dmux-hidden-${pane.id}`
+          )
+          continue
+        }
+
+        const targetPaneId = await getPaneShowTarget(pane.paneId)
+        if (!targetPaneId) {
+          throw new Error("No target pane is available to show hidden panes")
+        }
+        await tmuxService.joinPaneToTarget(pane.paneId, targetPaneId)
+      }
+
+      const targetPaneIds = new Set(targetPanes.map((pane) => pane.id))
+      await savePanes(
+        panes.map((pane) =>
+          targetPaneIds.has(pane.id) ? { ...pane, hidden } : pane
+        )
+      )
+      await refreshPaneLayout()
+      await loadPanes()
+
+      setStatusMessage(
+        hidden
+          ? `Hid ${targetPanes.length} other pane${targetPanes.length === 1 ? "" : "s"}`
+          : `Showed ${targetPanes.length} other pane${targetPanes.length === 1 ? "" : "s"}`
+      )
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+    } catch (error: any) {
+      setStatusMessage(`Failed to toggle other panes: ${error?.message || String(error)}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+    } finally {
+      setIsCreatingPane(false)
+    }
+  }
+
+  const toggleProjectPanesVisibility = async (
+    targetProjectRoot: string = getActiveProjectRoot()
+  ) => {
+    const action = getProjectVisibilityAction(panes, targetProjectRoot, projectRoot)
+
+    if (!action) {
+      setStatusMessage("No project panes to toggle")
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+      return
+    }
+
+    const { projectPanes, otherPanes } = partitionPanesByProject(
+      panes,
+      targetProjectRoot,
+      projectRoot
+    )
+
+    if (projectPanes.length === 0) {
+      setStatusMessage("No project panes to toggle")
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+      return
+    }
+
+    const projectName = getPaneProjectName(
+      projectPanes[0],
+      projectRoot
+    )
+    const panesToShow = action === "focus-project"
+      ? projectPanes.filter((pane) => pane.hidden)
+      : panes.filter((pane) => pane.hidden)
+    const panesToHide = action === "focus-project"
+      ? otherPanes.filter((pane) => !pane.hidden)
+      : []
+
+    try {
+      setIsCreatingPane(true)
+      setStatusMessage(
+        action === "focus-project"
+          ? `Showing ${projectName} panes...`
+          : "Showing all panes..."
+      )
+
+      // Show target project panes before hiding others so we always have
+      // an attached pane available for tmux join targets.
+      for (const pane of panesToShow) {
+        const targetPaneId = await getPaneShowTarget(pane.paneId)
+        if (!targetPaneId) {
+          throw new Error("No target pane is available to show hidden panes")
+        }
+        await TmuxService.getInstance().joinPaneToTarget(pane.paneId, targetPaneId)
+      }
+
+      for (const pane of panesToHide) {
+        await TmuxService.getInstance().breakPaneToWindow(
+          pane.paneId,
+          `dmux-hidden-${pane.id}`
+        )
+      }
+
+      const shownPaneIds = new Set(panesToShow.map((pane) => pane.id))
+      const hiddenPaneIds = new Set(panesToHide.map((pane) => pane.id))
+
+      await savePanes(
+        panes.map((pane) => {
+          if (shownPaneIds.has(pane.id)) {
+            return { ...pane, hidden: false }
+          }
+          if (hiddenPaneIds.has(pane.id)) {
+            return { ...pane, hidden: true }
+          }
+          return pane
+        })
+      )
+      await refreshPaneLayout()
+      await loadPanes()
+
+      setStatusMessage(
+        action === "focus-project"
+          ? panesToHide.length > 0
+            ? `Showing only ${projectName} panes`
+            : `Showed ${projectName} panes`
+          : "Showed all panes"
+      )
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+    } catch (error: any) {
+      setStatusMessage(`Failed to toggle project panes: ${error?.message || String(error)}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+    } finally {
+      setIsCreatingPane(false)
+    }
+  }
+
   const openPaneMenu = async (pane: DmuxPane) => {
-    const actionId = await popupManager.launchKebabMenuPopup(pane)
+    const actionId = await popupManager.launchKebabMenuPopup(pane, panes)
     if (!actionId) {
+      return
+    }
+
+    if (actionId === TOGGLE_PANE_VISIBILITY_ACTION) {
+      await togglePaneVisibility(pane)
+      return
+    }
+
+    if (actionId === "hide-others" || actionId === "show-others") {
+      await toggleOtherPanesVisibility(pane)
+      return
+    }
+
+    if (actionId === "focus-project" || actionId === "show-all") {
+      await toggleProjectPanesVisibility(getPaneProjectRoot(pane, projectRoot))
       return
     }
 
@@ -314,8 +646,24 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
+    if (actionId === PaneAction.CREATE_CHILD_WORKTREE) {
+      await handleCreateChildWorktree(pane)
+      return
+    }
+
     if (actionId === PaneAction.OPEN_TERMINAL_IN_WORKTREE) {
       await openTerminalInWorktree(pane)
+      return
+    }
+
+    if (actionId === PaneAction.OPEN_FILE_BROWSER) {
+      await openFileBrowserInWorktree(pane)
+      return
+    }
+
+    if (!isPaneAction(actionId)) {
+      setStatusMessage(`Unknown menu action: ${actionId}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
       return
     }
 
@@ -331,13 +679,16 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
+    const targetProjectRoot = getPaneProjectRoot(selectedPane, projectRoot)
+
     // Warn if agent is actively working
     if (selectedPane.agentStatus === "working") {
       const confirmed = await popupManager.launchConfirmPopup(
         "Agent Active",
         `Agent in "${selectedPane.slug}" is currently working. Attach another agent anyway?`,
         "Attach",
-        "Cancel"
+        "Cancel",
+        targetProjectRoot
       )
       if (!confirmed) return
     }
@@ -350,7 +701,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     } else if (availableAgents.length === 1) {
       selectedAgents = [availableAgents[0]]
     } else {
-      const agents = await popupManager.launchAgentChoicePopup()
+      const agents = await popupManager.launchAgentChoicePopup(targetProjectRoot)
       if (agents === null) {
         return
       }
@@ -363,9 +714,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
 
     // Prompt input
-    const promptValue = await popupManager.launchNewPanePopup(
-      getPaneProjectRoot(selectedPane, projectRoot)
-    )
+    const promptValue = await popupManager.launchNewPanePopup(targetProjectRoot)
     if (!promptValue) return
 
     try {
@@ -569,6 +918,12 @@ export function useInputHandling(params: UseInputHandlingParams) {
     if (input === "a" && selectedIndex < panes.length) {
       await attachAgentsToPane(panes[selectedIndex])
       return
+    } else if (input === "b" && selectedIndex < panes.length) {
+      await handleCreateChildWorktree(panes[selectedIndex])
+      return
+    } else if (input === "f" && selectedIndex < panes.length) {
+      await openFileBrowserInWorktree(panes[selectedIndex])
+      return
     } else if (input === "A" && selectedIndex < panes.length) {
       await openTerminalInWorktree(panes[selectedIndex])
       return
@@ -582,8 +937,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
         // Launch hooks popup
         await popupManager.launchHooksPopup(async () => {
           await launchHooksAuthoringSession()
-        })
-      })
+        }, getActiveProjectRoot())
+      }, getActiveProjectRoot())
       if (result) {
         try {
           const updates = Array.isArray((result as any).updates)
@@ -635,13 +990,29 @@ export function useInputHandling(params: UseInputHandlingParams) {
       }
     } else if (input === "l") {
       // Open logs popup
-      await popupManager.launchLogsPopup()
+      await popupManager.launchLogsPopup(getActiveProjectRoot())
     } else if (input === "h") {
-      // Launch hooks authoring session directly
-      await launchHooksAuthoringSession()
+      if (selectedIndex < panes.length) {
+        await togglePaneVisibility(panes[selectedIndex])
+      } else {
+        setStatusMessage("Select a pane to toggle visibility")
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+      }
+    } else if (input === "H") {
+      if (selectedIndex < panes.length) {
+        await toggleOtherPanesVisibility(panes[selectedIndex])
+      } else {
+        setStatusMessage("Select a pane to toggle the others")
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+      }
+    } else if (input === "P") {
+      await toggleProjectPanesVisibility()
     } else if (input === "?") {
       // Open keyboard shortcuts popup
-      const shortcutsAction = await popupManager.launchShortcutsPopup(!!controlPaneId)
+      const shortcutsAction = await popupManager.launchShortcutsPopup(
+        !!controlPaneId,
+        getActiveProjectRoot()
+      )
       if (shortcutsAction === "hooks") {
         await launchHooksAuthoringSession()
       }
@@ -688,7 +1059,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
         return
       }
 
-      const result = await popupManager.launchReopenWorktreePopup(orphanedWorktrees)
+      const result = await popupManager.launchReopenWorktreePopup(
+        orphanedWorktrees,
+        targetProjectRoot
+      )
       if (result) {
         await handleReopenWorktree(result.slug, result.path, targetProjectRoot)
       }

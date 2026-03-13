@@ -1,4 +1,4 @@
-import type { AgentName } from './utils/agentLaunch.js';
+import type { AgentName, PermissionMode } from './utils/agentLaunch.js';
 import type { NotificationSoundId } from './utils/notificationSounds.js';
 
 // Agent status with new analyzing state
@@ -21,6 +21,11 @@ export interface MergeTargetReference {
   worktreePath?: string;
 }
 
+export interface SidebarProject {
+  projectRoot: string;
+  projectName: string;
+}
+
 export interface DmuxPane {
   id: string;
   slug: string;
@@ -41,6 +46,7 @@ export interface DmuxPane {
   devStatus?: 'running' | 'stopped';
   devUrl?: string;        // Detected dev server URL
   agent?: AgentName;
+  permissionMode?: PermissionMode;
   agentStatus?: AgentStatus;  // Agent working/attention status
   needsAttention?: boolean; // Pane has settled and is waiting on the user
   lastAgentCheck?: number;  // Timestamp of last status check
@@ -95,6 +101,8 @@ export interface DmuxSettings {
   enabledAgents?: AgentName[];
   // Which macOS helper notification sounds are eligible for random selection
   enabledNotificationSounds?: NotificationSoundId[];
+  // Rotate short dmux tips in the footer
+  showFooterTips?: boolean;
   // Tmux hooks for event-driven updates (low CPU)
   // true = use hooks, false = use polling, undefined = not yet asked
   useTmuxHooks?: boolean;
@@ -137,6 +145,7 @@ export interface DmuxConfig {
   projectName: string;
   projectRoot: string;
   panes: DmuxPane[];
+  sidebarProjects?: SidebarProject[];
   settings: DmuxSettings;
   lastUpdated: string;
   controlPaneId?: string; // Pane ID running dmux TUI (left sidebar)

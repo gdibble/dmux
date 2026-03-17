@@ -42,6 +42,10 @@ import {
   type PaneAttentionChangedEvent,
 } from "./services/DmuxAttentionService.js"
 import { reopenWorktree } from "./utils/reopenWorktree.js"
+import {
+  resumeBranchWorkspace,
+  type ResumableBranchCandidate,
+} from "./utils/resumeBranches.js"
 import { fileURLToPath } from "url"
 import { dirname, resolve as resolvePath } from "path"
 import {
@@ -732,23 +736,52 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   // Helper function to reopen a closed worktree
   const handleReopenWorktree = async (
-    slug: string,
-    worktreePath: string,
+    candidate: ResumableBranchCandidate,
     targetProjectRoot?: string
   ) => {
+    const reopenProjectRoot = targetProjectRoot || projectRoot || process.cwd()
+    let selectedAgent: AgentName | undefined
+
+    if (!candidate.path) {
+      if (availableAgents.length === 0) {
+        setStatusMessage("No enabled agents available for opening this branch")
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+        return
+      }
+
+      const chosenAgent = await popupManager.launchSingleAgentChoicePopup(
+        "Select Agent",
+        `Choose the agent to launch for ${candidate.branchName}.`,
+        reopenProjectRoot
+      )
+      if (!chosenAgent) {
+        return
+      }
+      selectedAgent = chosenAgent
+    }
+
     try {
       setIsCreatingPane(true)
-      setStatusMessage(`Reopening ${slug}...`)
+      const label = candidate.path ? (candidate.slug || candidate.branchName) : candidate.branchName
+      setStatusMessage(`${candidate.path ? "Reopening" : "Opening"} ${label}...`)
 
-      const reopenProjectRoot = targetProjectRoot || projectRoot || process.cwd()
-      const result = await reopenWorktree({
-        slug,
-        worktreePath,
-        projectRoot: reopenProjectRoot,
-        sessionProjectRoot: projectRoot || process.cwd(),
-        sessionConfigPath: panesFile,
-        existingPanes: panes,
-      })
+      const result = candidate.path
+        ? await reopenWorktree({
+            slug: candidate.slug || candidate.branchName,
+            worktreePath: candidate.path,
+            projectRoot: reopenProjectRoot,
+            sessionProjectRoot: projectRoot || process.cwd(),
+            sessionConfigPath: panesFile,
+            existingPanes: panes,
+          })
+        : await resumeBranchWorkspace({
+            agent: selectedAgent!,
+            branchName: candidate.branchName,
+            projectRoot: reopenProjectRoot,
+            sessionProjectRoot: projectRoot || process.cwd(),
+            sessionConfigPath: panesFile,
+            existingPanes: panes,
+          })
 
       // Save the pane
       const updatedPanes = [...panes, result.pane]
@@ -756,10 +789,10 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
       await loadPanes()
 
-      setStatusMessage(`Reopened ${slug}`)
+      setStatusMessage(`${candidate.path ? "Reopened" : "Opened"} ${label}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
     } catch (error: any) {
-      setStatusMessage(`Failed to reopen: ${error.message}`)
+      setStatusMessage(`Failed to open branch: ${error.message}`)
       setTimeout(() => setStatusMessage(""), 3000)
     } finally {
       setIsCreatingPane(false)
@@ -1145,6 +1178,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     popupManager,
     actionSystem,
     controlPaneId,
+    trackProjectActivity,
     setStatusMessage,
     copyNonGitFiles,
     runCommandInternal,

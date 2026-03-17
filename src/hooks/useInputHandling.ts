@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react"
 import path from "path"
 import { useInput } from "ink"
 import type { DmuxPane, SidebarProject } from "../types.js"
+import type { TrackProjectActivity } from "../types/activity.js"
 import { StateManager } from "../shared/StateManager.js"
 import { TmuxService } from "../services/TmuxService.js"
 import {
@@ -14,7 +15,11 @@ import {
   PaneAction,
   TOGGLE_PANE_VISIBILITY_ACTION,
 } from "../actions/index.js"
-import { getMainBranch, getOrphanedWorktrees } from "../utils/git.js"
+import { getMainBranch } from "../utils/git.js"
+import {
+  getResumableBranches,
+  type ResumableBranchCandidate,
+} from "../utils/resumeBranches.js"
 import { enforceControlPaneSize } from "../utils/tmux.js"
 import { SIDEBAR_WIDTH } from "../utils/layoutManager.js"
 import { suggestCommand } from "../utils/commands.js"
@@ -89,6 +94,7 @@ interface UseInputHandlingParams {
   popupManager: PopupManager
   actionSystem: ActionSystem
   controlPaneId: string | undefined
+  trackProjectActivity: TrackProjectActivity
 
   // Callbacks
   setStatusMessage: (message: string) => void
@@ -96,7 +102,10 @@ interface UseInputHandlingParams {
   runCommandInternal: (type: "test" | "dev", pane: DmuxPane) => Promise<void>
   handlePaneCreationWithAgent: (prompt: string, targetProjectRoot?: string) => Promise<void>
   handleCreateChildWorktree: (pane: DmuxPane) => Promise<void>
-  handleReopenWorktree: (slug: string, worktreePath: string, targetProjectRoot?: string) => Promise<void>
+  handleReopenWorktree: (
+    candidate: ResumableBranchCandidate,
+    targetProjectRoot?: string
+  ) => Promise<void>
   setDevSourceFromPane: (pane: DmuxPane) => Promise<void>
   savePanes: (panes: DmuxPane[]) => Promise<void>
   sidebarProjects: SidebarProject[]
@@ -148,6 +157,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     popupManager,
     actionSystem,
     controlPaneId,
+    trackProjectActivity,
     setStatusMessage,
     copyNonGitFiles,
     runCommandInternal,
@@ -387,10 +397,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     try {
       const { resolveProjectRootFromPath } = await import("../utils/projectRoot.js")
       const resolved = resolveProjectRootFromPath(requestedProjectPath, projectRoot)
-      const nextProjects = addSidebarProject(sidebarProjects, {
-        projectRoot: resolved.projectRoot,
-        projectName: resolved.projectName,
-      })
+      const nextProjects = addSidebarProject(sidebarProjects, resolved)
 
       if (nextProjects === sidebarProjects) {
         selectProjectAction(resolved.projectRoot)
@@ -404,8 +411,56 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setStatusMessage(`Added ${resolved.projectName} to the sidebar`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
     } catch (error: any) {
-      setStatusMessage(error?.message || "Invalid project path")
-      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+      const {
+        createEmptyGitProject,
+        inspectProjectCreationTarget,
+      } = await import("../utils/projectRoot.js")
+      const target = inspectProjectCreationTarget(requestedProjectPath, projectRoot)
+
+      if (target.state !== "missing" && target.state !== "empty_directory") {
+        const message = target.state === "directory_not_empty"
+          ? `Directory is not a git repository and is not empty: ${target.absolutePath}. New projects can only be created in a missing or empty directory.`
+          : (error?.message || "Invalid project path")
+        setStatusMessage(message)
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+        return
+      }
+
+      const confirmMessage = target.state === "missing"
+        ? `This project does not exist yet:\n${target.absolutePath}\n\nCreate a new empty git repository here?`
+        : `This directory is not a git repository:\n${target.absolutePath}\n\nInitialize a new empty git repository here?`
+      const shouldCreateProject = await popupManager.launchConfirmPopup(
+        "Create Project",
+        confirmMessage,
+        "Create Project",
+        "Cancel",
+        projectRoot
+      )
+
+      if (!shouldCreateProject) {
+        return
+      }
+
+      try {
+        setStatusMessage(`Creating ${path.basename(target.absolutePath) || "project"}...`)
+        const createdProject = createEmptyGitProject(requestedProjectPath, projectRoot)
+        const nextProjects = addSidebarProject(sidebarProjects, createdProject)
+
+        if (nextProjects === sidebarProjects) {
+          selectProjectAction(createdProject.projectRoot)
+          setStatusMessage(`${createdProject.projectName} is already in the sidebar`)
+          setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+          return
+        }
+
+        const savedProjects = await saveSidebarProjects(nextProjects)
+        selectProjectAction(createdProject.projectRoot, savedProjects)
+        setStatusMessage(`Created ${createdProject.projectName} and added it to the sidebar`)
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+      } catch (creationError: any) {
+        setStatusMessage(creationError?.message || "Failed to create project")
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+      }
     }
   }
 
@@ -869,21 +924,43 @@ export function useInputHandling(params: UseInputHandlingParams) {
     const activeSlugs = panes
       .filter((pane) => sameSidebarProjectRoot(getPaneProjectRoot(pane, projectRoot), targetProjectRoot))
       .map((pane) => pane.slug)
-    const orphanedWorktrees = getOrphanedWorktrees(targetProjectRoot, activeSlugs)
+    const popupState = {
+      includeWorktrees: true,
+      includeLocalBranches: true,
+      includeRemoteBranches: false,
+      remoteLoaded: false,
+      filterQuery: "",
+    }
+    const resumableBranches = await trackProjectActivity(
+      async () => getResumableBranches(targetProjectRoot, activeSlugs, {
+        includeRemoteBranches: false,
+      }),
+      targetProjectRoot
+    )
 
-    if (orphanedWorktrees.length === 0) {
-      setStatusMessage(`No closed worktrees in ${targetProjectRoot}`)
-      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+    const result = await popupManager.launchReopenWorktreePopup(
+      resumableBranches,
+      targetProjectRoot,
+      popupState,
+      activeSlugs
+    )
+    if (!result) {
       return
     }
 
-    const result = await popupManager.launchReopenWorktreePopup(
-      orphanedWorktrees,
-      targetProjectRoot
-    )
-    if (result) {
-      await handleReopenWorktree(result.slug, result.path, targetProjectRoot)
-    }
+    await handleReopenWorktree({
+      branchName: result.candidate.branchName,
+      slug: result.candidate.slug,
+      path: result.candidate.path,
+      lastModified: result.candidate.lastModified
+        ? new Date(result.candidate.lastModified)
+        : undefined,
+      hasUncommittedChanges: result.candidate.hasUncommittedChanges,
+      hasWorktree: result.candidate.hasWorktree,
+      hasLocalBranch: result.candidate.hasLocalBranch,
+      hasRemoteBranch: result.candidate.hasRemoteBranch,
+      isRemote: result.candidate.isRemote,
+    }, targetProjectRoot)
   }
 
   const executePaneShortcut = async (

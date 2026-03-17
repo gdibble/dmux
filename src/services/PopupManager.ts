@@ -27,6 +27,10 @@ import {
 import { resolveDistPath } from "../utils/runtimePaths.js"
 import { getPaneProjectRoot } from "../utils/paneProject.js"
 import type { TrackProjectActivity } from "../types/activity.js"
+import type {
+  ReopenWorktreePopupResult,
+  ReopenWorktreePopupState,
+} from "../components/popups/reopenWorktreePopup.js"
 
 export interface PopupManagerConfig {
   sidebarWidth: number
@@ -417,6 +421,45 @@ export class PopupManager {
           title: "Select Agent(s)",
         },
         undefined,
+        projectRoot
+      )
+
+      return this.handleResult(result)
+    } catch (error: any) {
+      this.showTempMessage(`Failed to launch popup: ${error.message}`)
+      return null
+    }
+  }
+
+  async launchSingleAgentChoicePopup(
+    title: string = "Select Agent",
+    message?: string,
+    projectRoot?: string
+  ): Promise<AgentName | null> {
+    if (!this.checkPopupSupport()) return null
+    if (this.config.availableAgents.length === 0) return null
+
+    try {
+      const settings = this.config.settingsManager.getSettings()
+      const defaultAgent = settings.defaultAgent
+      const popupHeight = Math.max(12, Math.min(20, this.config.availableAgents.length + 8))
+
+      const result = await this.launchPopup<AgentName>(
+        "singleAgentChoicePopup.js",
+        [],
+        {
+          width: 72,
+          height: popupHeight,
+          title,
+        },
+        {
+          title,
+          message,
+          options: this.config.availableAgents.map((agent) => ({
+            id: agent,
+            default: defaultAgent === agent,
+          })),
+        },
         projectRoot
       )
 
@@ -940,14 +983,26 @@ export class PopupManager {
 
   async launchReopenWorktreePopup(
     worktrees: Array<{
-      slug: string
-      path: string
-      lastModified: Date
-      branch: string
+      branchName: string
+      slug?: string
+      path?: string
+      lastModified?: Date
       hasUncommittedChanges: boolean
+      hasWorktree: boolean
+      hasLocalBranch: boolean
+      hasRemoteBranch: boolean
+      isRemote: boolean
     }>,
-    projectRoot?: string
-  ): Promise<{ slug: string; path: string } | null> {
+    projectRoot?: string,
+    initialState: ReopenWorktreePopupState = {
+      includeWorktrees: true,
+      includeLocalBranches: true,
+      includeRemoteBranches: false,
+      remoteLoaded: false,
+      filterQuery: "",
+    },
+    activePaneSlugs: string[] = []
+  ): Promise<ReopenWorktreePopupResult | null> {
     if (!this.checkPopupSupport()) return null
 
     try {
@@ -955,23 +1010,25 @@ export class PopupManager {
       const popupProjectName = path.basename(popupProjectRoot) || popupProjectRoot
       const maxVisibleRows = 8
 
-      // Convert Date objects to ISO strings for JSON serialization
       const worktreesData = worktrees.map((wt) => ({
         ...wt,
-        lastModified: wt.lastModified.toISOString(),
+        lastModified: wt.lastModified?.toISOString(),
       }))
 
-      const result = await this.launchPopup<{ slug: string; path: string }>(
+      const result = await this.launchPopup<ReopenWorktreePopupResult>(
         "reopenWorktreePopup.js",
         [],
         {
           width: 78,
-          height: Math.max(15, Math.min(20, Math.min(worktrees.length, maxVisibleRows) + 10)),
-          title: `Reopen Closed Worktree: ${popupProjectName}`,
+          height: Math.max(25, Math.min(28, Math.min(worktrees.length, maxVisibleRows) + 17)),
+          title: `Resume Branch: ${popupProjectName}`,
         },
         {
           projectName: popupProjectName,
           worktrees: worktreesData,
+          initialState,
+          projectRoot: popupProjectRoot,
+          activePaneSlugs,
         },
         projectRoot
       )

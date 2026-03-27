@@ -117,8 +117,11 @@ describe('Pane Lifecycle Integration Tests', () => {
         return Buffer.from(value);
       };
 
-      // Tmux display-message (get current pane id)
+      // Tmux display-message (get current pane id or session name)
       if (cmd.includes('display-message')) {
+        if (cmd.includes('#{session_name}')) {
+          return returnValue('dmux-test');
+        }
         return returnValue('%0');
       }
 
@@ -208,6 +211,30 @@ describe('Pane Lifecycle Integration Tests', () => {
       }
     });
 
+    it('should scope pane border status to the current tmux session', async () => {
+      const { createPane } = await import('../../src/utils/paneCreation.js');
+
+      await createPane(
+        {
+          prompt: 'scope pane borders',
+          agent: 'claude',
+          projectName: 'test-project',
+          existingPanes: [],
+        },
+        ['claude']
+      );
+
+      expect(mockExecSync.mock.calls.some(([cmd]) =>
+        typeof cmd === 'string'
+        && cmd.includes('tmux set -t dmux-test pane-border-status top')
+      )).toBe(true);
+
+      expect(mockExecSync.mock.calls.some(([cmd]) =>
+        typeof cmd === 'string'
+        && cmd.includes('tmux set-option -g pane-border-status top')
+      )).toBe(false);
+    });
+
     it('should create git worktree with branch', async () => {
       const { createPane } = await import('../../src/utils/paneCreation.js');
 
@@ -226,6 +253,39 @@ describe('Pane Lifecycle Integration Tests', () => {
         expect.stringContaining('git worktree add'),
         expect.any(Object)
       );
+    });
+
+    it('should attach a fresh pane to an existing worktree without recreating it', async () => {
+      const { createPane } = await import('../../src/utils/paneCreation.js');
+      const existingWorktreePath = '/test/.dmux/worktrees/resume-me';
+      createdWorktreePaths.add(existingWorktreePath);
+      createdWorktreePaths.add(`${existingWorktreePath}/.git`);
+
+      const result = await createPane(
+        {
+          prompt: '',
+          agent: 'claude',
+          projectName: 'test-project',
+          existingPanes: [],
+          existingWorktree: {
+            slug: 'resume-me',
+            worktreePath: existingWorktreePath,
+            branchName: 'feature/resume-me',
+          },
+        },
+        ['claude']
+      );
+
+      expect(mockExecSync.mock.calls.some(([cmd]) =>
+        typeof cmd === 'string' && cmd.includes(`git worktree add "${existingWorktreePath}"`)
+      )).toBe(false);
+
+      if ('pane' in result) {
+        expect(result.pane.slug).toBe('resume-me');
+        expect(result.pane.branchName).toBe('feature/resume-me');
+        expect(result.pane.worktreePath).toBe(existingWorktreePath);
+        expect(result.pane.prompt).toBe('No initial prompt');
+      }
     });
 
     it('should split tmux pane', async () => {

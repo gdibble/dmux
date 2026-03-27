@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { capturePaneContent } from '../utils/paneCapture.js';
 import { LogService } from './LogService.js';
+import { getPaneDisplayName } from '../utils/paneTitle.js';
 
 // State types for agent status
 export type PaneState = 'option_dialog' | 'open_prompt' | 'in_progress';
@@ -539,7 +540,12 @@ ${content}`,
    * @param signal - Optional abort signal
    * @param dmuxPaneId - Optional dmux pane ID for friendly logging (e.g., "dmux-123")
    */
-  async analyzePane(tmuxPaneId: string, signal?: AbortSignal, dmuxPaneId?: string): Promise<PaneAnalysis> {
+  async analyzePane(
+    tmuxPaneId: string,
+    signal?: AbortSignal,
+    dmuxPaneId?: string,
+    capturedSnapshot?: string
+  ): Promise<PaneAnalysis> {
     const logService = LogService.getInstance();
 
     // For logging, try to get friendly name from StateManager
@@ -551,7 +557,7 @@ ${content}`,
         // Import dynamically to avoid circular dependency
         const { StateManager } = await import('../shared/StateManager.js');
         const pane = StateManager.getInstance().getPaneById(dmuxPaneId);
-        paneName = pane?.slug || dmuxPaneId;
+        paneName = pane ? getPaneDisplayName(pane) : dmuxPaneId;
         panePrompt = pane?.prompt;
         agentLabel = pane?.agent;
       } catch {
@@ -563,8 +569,11 @@ ${content}`,
 
     // Normalize the analyzer input to the last 50 trimmed lines so every LLM stage
     // sees the same bounded pane snapshot.
+    const analysisSource = typeof capturedSnapshot === 'string'
+      ? capturedSnapshot
+      : capturePaneContent(tmuxPaneId, ANALYZER_CONTEXT_LINE_LIMIT);
     const content = normalizePaneContentForAnalysis(
-      capturePaneContent(tmuxPaneId, ANALYZER_CONTEXT_LINE_LIMIT),
+      analysisSource,
       ANALYZER_CONTEXT_LINE_LIMIT
     );
 

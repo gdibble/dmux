@@ -42,6 +42,10 @@ import {
   type PaneAttentionChangedEvent,
 } from "./services/DmuxAttentionService.js"
 import { reopenWorktree } from "./utils/reopenWorktree.js"
+import {
+  resumeBranchWorkspace,
+  type ResumableBranchCandidate,
+} from "./utils/resumeBranches.js"
 import { fileURLToPath } from "url"
 import { dirname, resolve as resolvePath } from "path"
 import {
@@ -54,6 +58,13 @@ import { getPaneBranchName } from "./utils/git.js"
 import { getGitStatus } from "./utils/mergeValidation.js"
 import { createMergeTargetChain } from "./utils/mergeTargets.js"
 import { claimProcessShutdown } from "./utils/processShutdown.js"
+import { getPaneDisplayName } from "./utils/paneTitle.js"
+import {
+  FOOTER_TIP_ROTATION_INTERVAL,
+  getFooterTips,
+  getNextFooterTipIndex,
+  getRandomFooterTipIndex,
+} from "./utils/footerTips.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -102,6 +113,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   // Settings state
   const [settingsManager] = useState(() => new SettingsManager(projectRoot))
   const { projectSettings, saveSettings } = useProjectSettings(settingsFile)
+  const settings = settingsManager.getSettings()
 
   // Dialog state management
   const dialogState = useDialogState()
@@ -136,8 +148,14 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   // Agent selection is settings-driven.
   // Installation checks are performed lazily in the Enabled Agents settings popup.
   const availableAgents = resolveEnabledAgentsSelection(
-    settingsManager.getSettings().enabledAgents
+    settings.enabledAgents
   )
+  const footerTips = useMemo(() => getFooterTips(isDevMode), [isDevMode])
+  const showFooterTips = settings.showFooterTips !== false && footerTips.length > 0
+  const [footerTipIndex, setFooterTipIndex] = useState(() => getRandomFooterTipIndex(footerTips.length))
+  const currentFooterTip = showFooterTips && footerTipIndex >= 0
+    ? footerTips[footerTipIndex]
+    : undefined
 
   // Popup support detection
   const [popupsSupported, setPopupsSupported] = useState(false)
@@ -164,6 +182,20 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     () => new DmuxAttentionService({ focusService })
   )
 
+  useEffect(() => {
+    if (!showFooterTips || footerTips.length <= 1) {
+      return
+    }
+
+    const timer = setInterval(() => {
+      setFooterTipIndex((currentIndex) => getNextFooterTipIndex(currentIndex, footerTips.length))
+    }, FOOTER_TIP_ROTATION_INTERVAL)
+
+    return () => {
+      clearInterval(timer)
+    }
+  }, [showFooterTips, footerTips.length])
+
   // Subscribe to StateManager for unread error/warning count and toast updates
   useEffect(() => {
     const stateManager = StateManager.getInstance()
@@ -189,7 +221,15 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   }, [])
 
   // Panes state and persistence (skipLoading will be updated after actionSystem is initialized)
-  const { panes, setPanes, isLoading, loadPanes, savePanes } = usePanes(
+  const {
+    panes,
+    setPanes,
+    sidebarProjects,
+    isLoading,
+    loadPanes,
+    savePanes,
+    saveSidebarProjects,
+  } = usePanes(
     panesFile,
     false,
     sessionName,
@@ -456,8 +496,13 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   const activeDevSourcePath = isDevMode ? process.cwd() : undefined
   const projectActionLayout = useMemo(
-    () => buildProjectActionLayout(panes, sessionProjectRoot, projectName),
-    [panes, sessionProjectRoot, projectName]
+    () => buildProjectActionLayout(
+      panes,
+      sidebarProjects,
+      sessionProjectRoot,
+      projectName
+    ),
+    [panes, sidebarProjects, sessionProjectRoot, projectName]
   )
   const selectedProjectRoot = useMemo(() => {
     const selectedPane = selectedIndex < panes.length ? panes[selectedIndex] : undefined
@@ -482,6 +527,13 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     () => isLoading ? [] : buildGroupStartRows(projectActionLayout),
     [isLoading, projectActionLayout]
   )
+
+  useEffect(() => {
+    const maxIndex = Math.max(0, projectActionLayout.totalItems - 1)
+    if (selectedIndex > maxIndex) {
+      setSelectedIndex(maxIndex)
+    }
+  }, [projectActionLayout.totalItems, selectedIndex, setSelectedIndex])
 
   // Navigation logic moved to hook
   const { getCardGridPosition, findCardInDirection } = useNavigation(navigationRows, groupStartRows)
@@ -596,13 +648,13 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       if (createdCount > 0) {
         return {
           type: "success",
-          message: `Created ${createdCount} sub-worktree${createdCount === 1 ? "" : "s"} from ${parentPane.slug}`,
+          message: `Created ${createdCount} sub-worktree${createdCount === 1 ? "" : "s"} from ${getPaneDisplayName(parentPane)}`,
         }
       }
 
       return {
         type: "error",
-        message: `Failed to create a sub-worktree from ${parentPane.slug}`,
+        message: `Failed to create a sub-worktree from ${getPaneDisplayName(parentPane)}`,
         dismissable: true,
       }
     }
@@ -619,7 +671,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     const branchFromDirtyResult: ActionResult = {
       type: "choice",
       title: "Parent Worktree Has Uncommitted Changes",
-      message: `"${parentPane.slug}" has uncommitted changes. Commit them before creating a sub-worktree.`,
+      message: `"${getPaneDisplayName(parentPane)}" has uncommitted changes. Commit them before creating a sub-worktree.`,
       options: [
         {
           id: "commit_automatic",
@@ -685,23 +737,52 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   // Helper function to reopen a closed worktree
   const handleReopenWorktree = async (
-    slug: string,
-    worktreePath: string,
+    candidate: ResumableBranchCandidate,
     targetProjectRoot?: string
   ) => {
+    const reopenProjectRoot = targetProjectRoot || projectRoot || process.cwd()
+    let selectedAgent: AgentName | undefined
+
+    if (!candidate.path) {
+      if (availableAgents.length === 0) {
+        setStatusMessage("No enabled agents available for opening this branch")
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+        return
+      }
+
+      const chosenAgent = await popupManager.launchSingleAgentChoicePopup(
+        "Select Agent",
+        `Choose the agent to launch for ${candidate.branchName}.`,
+        reopenProjectRoot
+      )
+      if (!chosenAgent) {
+        return
+      }
+      selectedAgent = chosenAgent
+    }
+
     try {
       setIsCreatingPane(true)
-      setStatusMessage(`Reopening ${slug}...`)
+      const label = candidate.path ? (candidate.slug || candidate.branchName) : candidate.branchName
+      setStatusMessage(`${candidate.path ? "Reopening" : "Opening"} ${label}...`)
 
-      const reopenProjectRoot = targetProjectRoot || projectRoot || process.cwd()
-      const result = await reopenWorktree({
-        slug,
-        worktreePath,
-        projectRoot: reopenProjectRoot,
-        sessionProjectRoot: projectRoot || process.cwd(),
-        sessionConfigPath: panesFile,
-        existingPanes: panes,
-      })
+      const result = candidate.path
+        ? await reopenWorktree({
+            slug: candidate.slug || candidate.branchName,
+            worktreePath: candidate.path,
+            projectRoot: reopenProjectRoot,
+            sessionProjectRoot: projectRoot || process.cwd(),
+            sessionConfigPath: panesFile,
+            existingPanes: panes,
+          })
+        : await resumeBranchWorkspace({
+            agent: selectedAgent!,
+            branchName: candidate.branchName,
+            projectRoot: reopenProjectRoot,
+            sessionProjectRoot: projectRoot || process.cwd(),
+            sessionConfigPath: panesFile,
+            existingPanes: panes,
+          })
 
       // Save the pane
       const updatedPanes = [...panes, result.pane]
@@ -709,10 +790,12 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
       await loadPanes()
 
-      setStatusMessage(`Reopened ${slug}`)
+      setStatusMessage(
+        `${candidate.path ? "Reopened" : "Opened"} ${getPaneDisplayName(result.pane)}`
+      )
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
     } catch (error: any) {
-      setStatusMessage(`Failed to reopen: ${error.message}`)
+      setStatusMessage(`Failed to open branch: ${error.message}`)
       setTimeout(() => setStatusMessage(""), 3000)
     } finally {
       setIsCreatingPane(false)
@@ -765,7 +848,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       return
     }
 
-    setStatusMessage(`Switching source to "${pane.slug}"...`)
+    setStatusMessage(`Switching source to "${getPaneDisplayName(pane)}"...`)
     await trackProjectActivity(
       () => restartDevSessionAtSource(nextSource.nextSourcePath),
       paneProjectRoot
@@ -1098,6 +1181,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     popupManager,
     actionSystem,
     controlPaneId,
+    trackProjectActivity,
     setStatusMessage,
     copyNonGitFiles,
     runCommandInternal,
@@ -1106,6 +1190,8 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     handleReopenWorktree,
     setDevSourceFromPane: handleSetDevSourceFromPane,
     savePanes,
+    sidebarProjects,
+    saveSidebarProjects,
     loadPanes,
     cleanExit,
     availableAgents,
@@ -1119,34 +1205,45 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   // Footer height varies based on state:
   // - Quit confirm mode: 2 lines (marginTop + 1 text line)
   // - Normal mode calculation:
-  //   - Base: 4 lines (marginTop + logs divider + logs line + keyboard shortcuts)
+  //   - Base footer: 4 lines (marginTop + logs divider + logs line + keyboard shortcuts)
+  //   - Footer tip: +1 line when footer tips are enabled
   //   - Toast: +2 lines (toast message + marginBottom) if currentToast exists
   //   - Debug info: +1 line if DEBUG_DMUX
   //   - Status line: +1 line if updateAvailable/currentBranch/debugMessage
   //   - Status messages: +1 line per active message
+  const showFooterHelp = !showCommandPrompt
   let footerLines = 2
   if (quitConfirmMode) {
     footerLines = 2
   } else {
-    // Base footer (logs divider + logs + shortcuts - always shown)
-    footerLines = 4 // marginTop + logs divider + logs + shortcuts
-    // Add toast notification (calculate wrapped lines + header)
-    if (currentToast) {
-      // Calculate how many lines the toast will take
-      // Toast format: "✓ message" - icon (1) + space (1) + message
-      const iconAndSpaceLength = 2;
-      const toastTextLength = iconAndSpaceLength + currentToast.message.length;
+    footerLines = 0
 
-      // Available width is sidebar width (40) minus padding/margins (~2)
-      const availableWidth = SIDEBAR_WIDTH - 2;
-      const wrappedLines = Math.ceil(toastTextLength / availableWidth);
+    if (showFooterHelp) {
+      footerLines = 4 // marginTop + logs divider + logs + shortcuts
 
-      footerLines += wrappedLines + 1 + 1; // wrapped lines + header line + marginBottom
+      if (currentFooterTip) {
+        footerLines += 1
+      }
+
+      // Add toast notification (calculate wrapped lines + header)
+      if (currentToast) {
+        // Toast format: "✓ message" - icon (1) + space (1) + message
+        const iconAndSpaceLength = 2;
+        const toastTextLength = iconAndSpaceLength + currentToast.message.length;
+
+        // Available width is sidebar width (40) minus padding/margins (~2)
+        const availableWidth = SIDEBAR_WIDTH - 2;
+        const wrappedLines = Math.ceil(toastTextLength / availableWidth);
+
+        footerLines += wrappedLines + 1 + 1; // wrapped lines + header line + marginBottom
+      }
+
+      // Add debug info
+      if (process.env.DEBUG_DMUX) {
+        footerLines += 1
+      }
     }
-    // Add debug info
-    if (process.env.DEBUG_DMUX) {
-      footerLines += 1
-    }
+
     // Add status line
     if (isDevMode || updateAvailable || currentBranch || debugMessage) {
       footerLines += 1
@@ -1171,6 +1268,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
           isLoading={isLoading}
           agentStatuses={agentStatuses}
           activeDevSourcePath={activeDevSourcePath}
+          sidebarProjects={sidebarProjects}
           fallbackProjectRoot={projectRoot || process.cwd()}
           fallbackProjectName={projectName}
           isProjectBusy={isProjectHeaderBusy}
@@ -1216,13 +1314,14 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
       {/* Footer - always at bottom */}
       <FooterHelp
-        show={!showCommandPrompt}
+        show={showFooterHelp}
         quitConfirmMode={quitConfirmMode}
         unreadErrorCount={unreadErrorCount}
         unreadWarningCount={unreadWarningCount}
         currentToast={currentToast}
         toastQueueLength={toastQueueLength}
         toastQueuePosition={toastQueuePosition}
+        footerTip={currentFooterTip}
         gridInfo={(() => {
           if (!process.env.DEBUG_DMUX) return undefined
           const rows = navigationRows.length

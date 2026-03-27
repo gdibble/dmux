@@ -3,6 +3,7 @@ import path from "path"
 import {
   launchNodePopupNonBlocking,
   POPUP_POSITIONING,
+  type PopupOptions as TmuxPopupOptions,
   type PopupResult,
 } from "../utils/popup.js"
 import { StateManager } from "../shared/StateManager.js"
@@ -25,7 +26,12 @@ import {
 } from "../utils/notificationSounds.js"
 import { resolveDistPath } from "../utils/runtimePaths.js"
 import { getPaneProjectRoot } from "../utils/paneProject.js"
+import { getPaneDisplayName } from "../utils/paneTitle.js"
 import type { TrackProjectActivity } from "../types/activity.js"
+import type {
+  ReopenWorktreePopupResult,
+  ReopenWorktreePopupState,
+} from "../components/popups/reopenWorktreePopup.js"
 
 export interface PopupManagerConfig {
   sidebarWidth: number
@@ -45,7 +51,8 @@ interface PopupOptions {
   width?: number
   height?: number
   title: string
-  positioning?: "standard" | "centered" | "large"
+  positioning?: "standard" | "centered" | "large" | "pane"
+  targetPaneId?: string
 }
 
 interface MergeUncommittedChoiceData {
@@ -163,7 +170,7 @@ export class PopupManager {
           args = [tempFile, ...args]
         }
 
-        let positioning
+        let positioning: Partial<TmuxPopupOptions>
         if (options.positioning === "large") {
           const tmuxService = TmuxService.getInstance()
           const dims = await tmuxService.getAllDimensions()
@@ -176,16 +183,56 @@ export class PopupManager {
           positioning = POPUP_POSITIONING.centeredWithSidebar(
             this.config.sidebarWidth
           )
+        } else if (
+          options.positioning === "pane"
+          && options.targetPaneId
+        ) {
+          const tmuxService = TmuxService.getInstance()
+          const [dims, panePositions] = await Promise.all([
+            tmuxService.getAllDimensions(),
+            tmuxService.getPanePositions(),
+          ])
+          const targetPane = panePositions.find(
+            (pane) => pane.paneId === options.targetPaneId
+          )
+
+          positioning = targetPane
+            ? POPUP_POSITIONING.overPane(
+                targetPane,
+                {
+                  width: options.width ?? 80,
+                  height: options.height ?? 20,
+                },
+                {
+                  width: dims.clientWidth,
+                  height: dims.clientHeight,
+                }
+              )
+            : POPUP_POSITIONING.standard(this.config.sidebarWidth)
         } else {
           positioning = POPUP_POSITIONING.standard(this.config.sidebarWidth)
         }
 
-        return launchNodePopupNonBlocking<T>(popupScriptPath, args, {
+        const popupOptions: TmuxPopupOptions = {
           ...positioning,
-          ...(options.width !== undefined && { width: options.width }),
-          ...(options.height !== undefined && { height: options.height }),
           title: options.title,
-        })
+        }
+
+        if (positioning.width !== undefined || options.width !== undefined) {
+          popupOptions.width = positioning.width ?? options.width
+        }
+
+        if (positioning.height !== undefined || options.height !== undefined) {
+          popupOptions.height = positioning.height ?? options.height
+        }
+
+        const popupHandle = launchNodePopupNonBlocking<T>(
+          popupScriptPath,
+          args,
+          popupOptions
+        )
+        await popupHandle.readyPromise
+        return popupHandle
       }, this.resolveActivityProjectRoot(projectRoot))
 
       // Wait for result
@@ -269,7 +316,8 @@ export class PopupManager {
 
   async launchKebabMenuPopup(
     pane: DmuxPane,
-    panes: DmuxPane[]
+    panes: DmuxPane[],
+    options: { anchorToPane?: boolean } = {}
   ): Promise<PaneMenuActionId | null> {
     if (!this.checkPopupSupport()) return null
 
@@ -283,11 +331,13 @@ export class PopupManager {
       )
       const result = await this.launchPopup<string>(
         "kebabMenuPopup.js",
-        [pane.slug, JSON.stringify(actions)],
+        [getPaneDisplayName(pane), JSON.stringify(actions)],
         {
           width: 60,
-          height: Math.min(20, actions.length + 5),
-          title: `Menu: ${pane.slug}`,
+          height: Math.min(21, actions.length + 6),
+          title: `Menu: ${getPaneDisplayName(pane)}`,
+          positioning: options.anchorToPane ? "pane" : "standard",
+          targetPaneId: options.anchorToPane ? pane.paneId : undefined,
         },
         undefined,
         getPaneProjectRoot(pane, this.config.projectRoot)
@@ -372,6 +422,45 @@ export class PopupManager {
           title: "Select Agent(s)",
         },
         undefined,
+        projectRoot
+      )
+
+      return this.handleResult(result)
+    } catch (error: any) {
+      this.showTempMessage(`Failed to launch popup: ${error.message}`)
+      return null
+    }
+  }
+
+  async launchSingleAgentChoicePopup(
+    title: string = "Select Agent",
+    message?: string,
+    projectRoot?: string
+  ): Promise<AgentName | null> {
+    if (!this.checkPopupSupport()) return null
+    if (this.config.availableAgents.length === 0) return null
+
+    try {
+      const settings = this.config.settingsManager.getSettings()
+      const defaultAgent = settings.defaultAgent
+      const popupHeight = Math.max(12, Math.min(20, this.config.availableAgents.length + 8))
+
+      const result = await this.launchPopup<AgentName>(
+        "singleAgentChoicePopup.js",
+        [],
+        {
+          width: 72,
+          height: popupHeight,
+          title,
+        },
+        {
+          title,
+          message,
+          options: this.config.availableAgents.map((agent) => ({
+            id: agent,
+            default: defaultAgent === agent,
+          })),
+        },
         projectRoot
       )
 
@@ -895,32 +984,53 @@ export class PopupManager {
 
   async launchReopenWorktreePopup(
     worktrees: Array<{
-      slug: string
-      path: string
-      lastModified: Date
-      branch: string
+      branchName: string
+      slug?: string
+      path?: string
+      lastModified?: Date
       hasUncommittedChanges: boolean
+      hasWorktree: boolean
+      hasLocalBranch: boolean
+      hasRemoteBranch: boolean
+      isRemote: boolean
     }>,
-    projectRoot?: string
-  ): Promise<{ slug: string; path: string } | null> {
+    projectRoot?: string,
+    initialState: ReopenWorktreePopupState = {
+      includeWorktrees: true,
+      includeLocalBranches: true,
+      includeRemoteBranches: false,
+      remoteLoaded: false,
+      filterQuery: "",
+    },
+    activePaneSlugs: string[] = []
+  ): Promise<ReopenWorktreePopupResult | null> {
     if (!this.checkPopupSupport()) return null
 
     try {
-      // Convert Date objects to ISO strings for JSON serialization
+      const popupProjectRoot = projectRoot || this.config.projectRoot
+      const popupProjectName = path.basename(popupProjectRoot) || popupProjectRoot
+      const maxVisibleRows = 8
+
       const worktreesData = worktrees.map((wt) => ({
         ...wt,
-        lastModified: wt.lastModified.toISOString(),
+        lastModified: wt.lastModified?.toISOString(),
       }))
 
-      const result = await this.launchPopup<{ slug: string; path: string }>(
+      const result = await this.launchPopup<ReopenWorktreePopupResult>(
         "reopenWorktreePopup.js",
         [],
         {
-          width: 70,
-          height: Math.min(25, worktrees.length * 3 + 8),
-          title: "📂 Reopen Closed Worktree",
+          width: 78,
+          height: Math.max(25, Math.min(28, Math.min(worktrees.length, maxVisibleRows) + 17)),
+          title: `Resume Branch: ${popupProjectName}`,
         },
-        { worktrees: worktreesData },
+        {
+          projectName: popupProjectName,
+          worktrees: worktreesData,
+          initialState,
+          projectRoot: popupProjectRoot,
+          activePaneSlugs,
+        },
         projectRoot
       )
 

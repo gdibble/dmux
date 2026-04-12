@@ -1135,11 +1135,11 @@ class Dmux {
       const oldPanesFile = path.join(homeDmuxDir, `${projectIdentifier}-panes.json`);
       const oldSettingsFile = path.join(homeDmuxDir, `${projectIdentifier}-settings.json`);
       const oldUpdateSettingsFile = path.join(homeDmuxDir, 'update-settings.json');
-      
+
       let panes = [];
       let settings = {};
       let updateSettings = {};
-      
+
       // Try to read old panes file
       if (await this.fileExists(oldPanesFile)) {
         try {
@@ -1149,7 +1149,7 @@ class Dmux {
           // Intentionally silent - migration is best-effort
         }
       }
-      
+
       // Try to read old settings file
       if (await this.fileExists(oldSettingsFile)) {
         try {
@@ -1159,7 +1159,7 @@ class Dmux {
           // Intentionally silent - migration is best-effort
         }
       }
-      
+
       // Try to read old update settings file
       if (await this.fileExists(oldUpdateSettingsFile)) {
         try {
@@ -1169,7 +1169,7 @@ class Dmux {
           // Intentionally silent - migration is best-effort
         }
       }
-      
+
       // Check for config from previous parent directory location
       if (await this.fileExists(oldParentConfigFile)) {
         try {

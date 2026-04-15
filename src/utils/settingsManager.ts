@@ -72,6 +72,7 @@ const DEFAULT_SETTINGS: DmuxSettings = {
   enabledAgents: getDefaultEnabledAgents(),
   enabledNotificationSounds: getDefaultNotificationSoundSelection(),
   showFooterTips: true,
+  language: 'en',
 };
 
 const AGENT_OPTIONS = getAgentDefinitions().map((agent) => ({
@@ -80,6 +81,16 @@ const AGENT_OPTIONS = getAgentDefinitions().map((agent) => ({
 }));
 
 export const SETTING_DEFINITIONS: SettingDefinition[] = [
+  {
+    key: 'language',
+    label: 'Language',
+    description: 'Select the display language for dmux',
+    type: 'select',
+    options: [
+      { value: 'en', label: 'English' },
+      { value: 'ja', label: '日本語' },
+    ],
+  },
   {
     key: 'permissionMode',
     label: 'Agent Permission Mode',

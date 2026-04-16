@@ -90,7 +90,7 @@ const PRReviewPopupApp: React.FC<Props> = ({ resultFile, data }) => {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const [value, setValue] = useState(data.defaultValue);
-  const [mode, setMode] = useState<'summary' | 'files' | 'diff'>('summary');
+  const [mode, setMode] = useState<'summary' | 'files' | 'submit' | 'diff'>('summary');
   const [fileIndex, setFileIndex] = useState(0);
   const [diff, setDiff] = useState<{ lines: string[]; offset: number; filePath: string } | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -169,7 +169,7 @@ const PRReviewPopupApp: React.FC<Props> = ({ resultFile, data }) => {
         return;
       }
       if (key.tab) {
-        setMode('summary');
+        setMode('submit');
         return;
       }
       if (key.upArrow) {
@@ -187,10 +187,28 @@ const PRReviewPopupApp: React.FC<Props> = ({ resultFile, data }) => {
       return;
     }
 
+    if (mode === 'submit') {
+      if (key.escape) {
+        setMode('summary');
+        return;
+      }
+      if (key.tab) {
+        setMode('summary');
+        return;
+      }
+      if (key.return) {
+        submit();
+        return;
+      }
+      return;
+    }
+
     // mode === 'summary'
     if (key.tab) {
       if (data.files.length > 0) {
         setMode('files');
+      } else {
+        setMode('submit');
       }
       return;
     }
@@ -222,14 +240,17 @@ const PRReviewPopupApp: React.FC<Props> = ({ resultFile, data }) => {
   }
 
   const footer = mode === 'summary'
-    ? 'Edit summary • Tab → files • Ctrl+S submit • ESC cancel'
-    : '↑↓ file • Enter peek diff • Tab ← summary • Ctrl+S submit • ESC ← summary';
+    ? 'Edit summary • Tab → next • Ctrl+S submit • ESC cancel'
+    : mode === 'files'
+      ? '↑↓ file • Enter peek diff • Tab → submit • ESC ← summary'
+      : 'Enter to create PR • Tab ← summary • ESC ← summary';
 
-  // When focus is on the file list, block popup-level ESC so ESC returns to summary instead.
+  // ESC from any non-summary mode returns focus to summary; ESC from summary cancels.
   const allowEscapeToCancel = mode === 'summary';
 
   const summaryActive = mode === 'summary';
   const filesActive = mode === 'files';
+  const submitActive = mode === 'submit';
 
   const hasFilesAbove = fileWindow.start > 0;
   const hasFilesBelow = fileWindow.end < data.files.length;
@@ -304,6 +325,21 @@ const PRReviewPopupApp: React.FC<Props> = ({ resultFile, data }) => {
             })
           )}
           {hasFilesBelow ? <Text dimColor>↓ more below</Text> : null}
+        </Box>
+
+        <Box marginTop={1} justifyContent="flex-end">
+          <Box
+            borderStyle="round"
+            borderColor={submitActive ? POPUP_CONFIG.successColor : 'gray'}
+            paddingX={2}
+          >
+            <Text
+              color={submitActive ? POPUP_CONFIG.successColor : 'white'}
+              bold={submitActive}
+            >
+              {submitActive ? '▶ ' : '  '}Create PR
+            </Text>
+          </Box>
         </Box>
       </PopupContainer>
     </PopupWrapper>

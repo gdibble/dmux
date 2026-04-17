@@ -176,7 +176,12 @@ describe('useInputHandling reopen project selection', () => {
     expect(saveSidebarProjects).toHaveBeenCalledWith([
       { projectRoot: '/repo-root', projectName: 'repo-root' },
       { projectRoot: '/repo-selected', projectName: 'repo-selected' },
-      { projectRoot: '/repo-root/new-project', projectName: 'new-project' },
+      {
+        projectRoot: '/repo-root/new-project',
+        projectName: 'new-project',
+        colorTheme: 'red',
+        colorThemeSource: 'auto',
+      },
     ]);
     expect(setStatusMessage).toHaveBeenCalledWith('Created new-project and added it to the sidebar');
 
@@ -240,7 +245,7 @@ describe('useInputHandling reopen project selection', () => {
       {
         includeWorktrees: true,
         includeLocalBranches: true,
-        includeRemoteBranches: false,
+        includeRemoteBranches: true,
         remoteLoaded: false,
         filterQuery: '',
       },
@@ -314,7 +319,7 @@ describe('useInputHandling reopen project selection', () => {
       {
         includeWorktrees: true,
         includeLocalBranches: true,
-        includeRemoteBranches: false,
+        includeRemoteBranches: true,
         remoteLoaded: false,
         filterQuery: '',
       },

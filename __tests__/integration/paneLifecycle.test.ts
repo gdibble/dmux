@@ -53,6 +53,8 @@ vi.mock('../../src/shared/StateManager.js', () => ({
 // Mock hooks
 vi.mock('../../src/utils/hooks.js', () => ({
   triggerHook: vi.fn(() => Promise.resolve()),
+  triggerHookSync: vi.fn(() => Promise.resolve({ success: true })),
+  initializeHooksDirectory: vi.fn(),
 }));
 
 // Mock LogService
@@ -90,6 +92,7 @@ describe('Pane Lifecycle Integration Tests', () => {
   let tmuxSession: MockTmuxSession;
   let gitRepo: MockGitRepo;
   let createdWorktreePaths: Set<string>;
+  let killedPaneIds: Set<string>;
 
   beforeEach(() => {
     // Reset all mocks
@@ -100,6 +103,7 @@ describe('Pane Lifecycle Integration Tests', () => {
     tmuxSession = createMockTmuxSession('dmux-test', 1);
     gitRepo = createMockGitRepo('main');
     createdWorktreePaths = new Set<string>();
+    killedPaneIds = new Set<string>();
 
     fsMock.existsSync.mockImplementation((target) => {
       const value = String(target);
@@ -132,7 +136,26 @@ describe('Pane Lifecycle Integration Tests', () => {
 
       // Tmux list-panes
       if (cmd.includes('list-panes')) {
-        return returnValue('%0:dmux-control:80x24\n%1:test:80x24');
+        return returnValue(
+          [
+            '%0:dmux-control:80x24',
+            '%1:test:80x24',
+          ]
+            .filter((line) => {
+              const paneId = line.match(/^%\d+/)?.[0];
+              return paneId && !killedPaneIds.has(paneId);
+            })
+            .join('\n')
+        );
+      }
+
+      // Tmux kill-pane
+      if (cmd.includes('kill-pane')) {
+        const paneId = cmd.match(/-t '([^']+)'/)?.[1];
+        if (paneId) {
+          killedPaneIds.add(paneId);
+        }
+        return returnValue('');
       }
 
       // Tmux split-window
@@ -472,6 +495,133 @@ describe('Pane Lifecycle Integration Tests', () => {
 
       // Should return error or handle gracefully
       expect(result).toBeDefined();
+    });
+  });
+
+  describe('Worktree Setup Failure Handling', () => {
+    // Regression tests for: when worktree preparation fails, the pane must
+    // be torn down and the agent must NOT be launched. Leaving the pane open
+    // at projectRoot would let the agent run against main, which is dangerous.
+
+    const getSendKeysCommands = () =>
+      mockExecSync.mock.calls
+        .map(([cmd]) => (typeof cmd === 'string' ? cmd : ''))
+        .filter((cmd) => cmd.includes('send-keys'));
+
+    const getKillPaneCommands = () =>
+      mockExecSync.mock.calls
+        .map(([cmd]) => (typeof cmd === 'string' ? cmd : ''))
+        .filter((cmd) => cmd.includes('kill-pane'));
+
+    it('kills the pane and throws when the worktree is missing', async () => {
+      const { createPane } = await import('../../src/utils/paneCreation.js');
+
+      // Point at an "existing" worktree path that isn't tracked as created
+      // → fs.existsSync(worktreePath + '/.git') returns false → throws inside
+      // the worktree-creation try/catch before any agent command is sent.
+      const missingWorktreePath = '/test/.dmux/worktrees/does-not-exist';
+
+      await expect(
+        createPane(
+          {
+            prompt: 'fix auth bug',
+            agent: 'claude',
+            projectName: 'test-project',
+            existingPanes: [],
+            existingWorktree: {
+              slug: 'does-not-exist',
+              worktreePath: missingWorktreePath,
+              branchName: 'does-not-exist',
+            },
+          },
+          ['claude']
+        )
+      ).rejects.toThrow(/Failed to create worktree/);
+
+      // Pane must be killed so the user is never dropped at projectRoot
+      // with a live shell.
+      expect(
+        getKillPaneCommands().some((cmd) => cmd.includes('%1'))
+      ).toBe(true);
+
+      // Agent launch command must never reach the pane.
+      const sendKeys = getSendKeysCommands();
+      expect(sendKeys.some((cmd) => cmd.includes('claude'))).toBe(false);
+    });
+
+    it('kills the pane and throws when the worktree_created hook fails', async () => {
+      const { triggerHookSync } = await import('../../src/utils/hooks.js');
+      vi.mocked(triggerHookSync).mockResolvedValueOnce({
+        success: false,
+        error: 'dependency install failed',
+      });
+
+      const { createPane } = await import('../../src/utils/paneCreation.js');
+
+      await expect(
+        createPane(
+          {
+            prompt: 'add dashboard',
+            agent: 'claude',
+            projectName: 'test-project',
+            existingPanes: [],
+          },
+          ['claude']
+        )
+      ).rejects.toThrow(/worktree_created hook failed/);
+
+      // Pane must be killed so the agent cannot run inside a
+      // half-configured worktree.
+      expect(
+        getKillPaneCommands().some((cmd) => cmd.includes('%1'))
+      ).toBe(true);
+
+      // Agent launch command must never reach the pane.
+      const sendKeys = getSendKeysCommands();
+      expect(sendKeys.some((cmd) => cmd.includes('claude'))).toBe(false);
+    });
+
+    it('runs worktree_created hook before launching the agent', async () => {
+      const { triggerHookSync } = await import('../../src/utils/hooks.js');
+      const callOrder: string[] = [];
+
+      vi.mocked(triggerHookSync).mockImplementationOnce(async (hookName) => {
+        callOrder.push(`hook:${hookName}`);
+        return { success: true };
+      });
+
+      // Record when the agent launch command is sent to the pane.
+      const originalImpl = mockExecSync.getMockImplementation();
+      mockExecSync.mockImplementation((command: string, options?: any) => {
+        const cmd = command.toString();
+        if (
+          cmd.includes('send-keys')
+          && cmd.includes('claude')
+          && !cmd.includes('worktree add')
+        ) {
+          callOrder.push('agent-launch');
+        }
+        return originalImpl ? originalImpl(command, options) : '';
+      });
+
+      const { createPane } = await import('../../src/utils/paneCreation.js');
+
+      await createPane(
+        {
+          prompt: 'hook ordering test',
+          agent: 'claude',
+          projectName: 'test-project',
+          existingPanes: [],
+        },
+        ['claude']
+      );
+
+      const hookIdx = callOrder.indexOf('hook:worktree_created');
+      const agentIdx = callOrder.indexOf('agent-launch');
+
+      expect(hookIdx).toBeGreaterThanOrEqual(0);
+      expect(agentIdx).toBeGreaterThanOrEqual(0);
+      expect(hookIdx).toBeLessThan(agentIdx);
     });
   });
 

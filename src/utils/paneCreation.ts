@@ -12,7 +12,7 @@ import {
 import { SIDEBAR_WIDTH, recalculateAndApplyLayout } from './layoutManager.js';
 import { generateSlug } from './slug.js';
 import { capturePaneContent } from './paneCapture.js';
-import { triggerHook, initializeHooksDirectory } from './hooks.js';
+import { triggerHook, triggerHookSync, initializeHooksDirectory } from './hooks.js';
 import { TMUX_LAYOUT_APPLY_DELAY, TMUX_SPLIT_DELAY } from '../constants/timing.js';
 import { atomicWriteJsonSync } from './atomicWrite.js';
 import { LogService } from '../services/LogService.js';
@@ -37,6 +37,8 @@ import { ensureGeminiFolderTrusted } from './geminiTrust.js';
 import { isValidBranchName } from './git.js';
 import { sendPromptViaTmux } from './agentPromptDispatch.js';
 import { readWorktreeMetadata, writeWorktreeMetadata } from './worktreeMetadata.js';
+import { resolveProjectColorTheme } from './paneColors.js';
+import type { SidebarProject } from '../types.js';
 
 export interface CreatePaneOptions {
   prompt: string;
@@ -197,11 +199,13 @@ export async function createPane(
   const configPath = optionsSessionConfigPath
     || path.join(sessionProjectRoot, '.dmux', 'dmux.config.json');
   let controlPaneId: string | undefined;
+  let configSidebarProjects: SidebarProject[] = [];
 
   try {
     const configContent = fs.readFileSync(configPath, 'utf-8');
     const config: DmuxConfig = JSON.parse(configContent);
     controlPaneId = config.controlPaneId;
+    configSidebarProjects = Array.isArray(config.sidebarProjects) ? config.sidebarProjects : [];
 
     // Verify the control pane ID from config still exists
     if (controlPaneId) {
@@ -470,21 +474,81 @@ export async function createPane(
       initializeHooksDirectory(worktreePath);
     }
   } catch (error) {
-    // Worktree creation failed - send helpful error message to the pane
+    // Worktree creation failed - kill the pane and abort. Leaving the pane
+    // open at projectRoot is dangerous because the agent would run against
+    // the main checkout instead of an isolated worktree.
     const errorMsg = error instanceof Error ? error.message : String(error);
-    await tmuxService.sendShellCommand(
-      paneInfo,
-      `echo "❌ Failed to create worktree: ${errorMsg}"`
+    LogService.getInstance().error(
+      `Worktree creation failed for ${slug}: ${errorMsg}`,
+      'paneCreation',
+      undefined,
+      error instanceof Error ? error : undefined
     );
-    await tmuxService.sendTmuxKeys(paneInfo, 'Enter');
-    await tmuxService.sendShellCommand(
-      paneInfo,
-      `echo "Tip: Try running: git worktree prune && git branch -D ${branchName}"`
-    );
-    await tmuxService.sendTmuxKeys(paneInfo, 'Enter');
-    await new Promise((resolve) => setTimeout(resolve, TMUX_LAYOUT_APPLY_DELAY));
+    try {
+      await tmuxService.killPane(paneInfo);
+    } catch (killError) {
+      LogService.getInstance().warn(
+        `Failed to kill pane ${paneInfo} after worktree creation failure: ${killError}`,
+        'paneCreation'
+      );
+    }
+    if (controlPaneId) {
+      try {
+        await tmuxService.selectPane(controlPaneId);
+      } catch {
+        // best-effort focus restore
+      }
+    }
+    throw new Error(`Failed to create worktree for "${slug}": ${errorMsg}`);
+  }
 
-    // Don't throw - let the pane stay open so user can debug
+  // Build the pane object now so the worktree_created hook can receive full
+  // pane context. The hook must succeed before we launch the agent — a
+  // failing hook means the worktree is in an unknown state and running a
+  // prompt against it would be dangerous.
+  const newPane: DmuxPane = {
+    id: `dmux-${Date.now()}`,
+    slug,
+    displayName: existingWorktreeMetadata?.displayName,
+    branchName: branchName !== slug ? branchName : undefined,
+    prompt: prompt || 'No initial prompt',
+    paneId: paneInfo,
+    projectRoot,
+    projectName: paneProjectName,
+    colorTheme: resolveProjectColorTheme(projectRoot, configSidebarProjects),
+    worktreePath,
+    agent,
+    permissionMode: settings.permissionMode,
+    autopilot: settings.enableAutopilotByDefault ?? false,
+    mergeTargetChain,
+  };
+
+  // Run worktree_created hook synchronously BEFORE launching the agent.
+  // If the hook fails, tear down the pane and abort so the agent never
+  // runs against a half-configured worktree.
+  const hookResult = await triggerHookSync('worktree_created', projectRoot, newPane);
+  if (!hookResult.success) {
+    const hookError = hookResult.error || 'unknown error';
+    LogService.getInstance().error(
+      `worktree_created hook failed for ${slug}: ${hookError}`,
+      'paneCreation'
+    );
+    try {
+      await tmuxService.killPane(paneInfo);
+    } catch (killError) {
+      LogService.getInstance().warn(
+        `Failed to kill pane ${paneInfo} after worktree_created hook failure: ${killError}`,
+        'paneCreation'
+      );
+    }
+    if (controlPaneId) {
+      try {
+        await tmuxService.selectPane(controlPaneId);
+      } catch {
+        // best-effort focus restore
+      }
+    }
+    throw new Error(`worktree_created hook failed for "${slug}": ${hookError}`);
   }
 
   // Launch agent if specified
@@ -569,24 +633,6 @@ export async function createPane(
   // Keep focus on the new pane
   await tmuxService.selectPane(paneInfo);
 
-  // Create the pane object
-  const newPane: DmuxPane = {
-    id: `dmux-${Date.now()}`,
-    slug,
-    displayName: existingWorktreeMetadata?.displayName,
-    branchName: branchName !== slug ? branchName : undefined, // Only store if different from slug
-    prompt: prompt || 'No initial prompt',
-    paneId: paneInfo,
-    projectRoot,
-    projectName: paneProjectName,
-    worktreePath,
-    agent,
-    permissionMode: settings.permissionMode,
-    // Set autopilot based on settings (use ?? to properly handle false vs undefined)
-    autopilot: settings.enableAutopilotByDefault ?? false,
-    mergeTargetChain,
-  };
-
   // CRITICAL: Save the pane to config IMMEDIATELY before destroying welcome pane.
   // Only needed for the first content pane — ensures loadPanes sees a pane in config
   // before we kill the welcome pane (prevents spurious "0 panes" welcome recreation).
@@ -614,9 +660,6 @@ export async function createPane(
   } catch {
     // Ignore - welcome pane cleanup is not critical
   }
-
-  // Trigger worktree_created hook (after full pane setup)
-  await triggerHook('worktree_created', projectRoot, newPane);
 
   // Switch back to the original pane
   await tmuxService.selectPane(originalPaneId);

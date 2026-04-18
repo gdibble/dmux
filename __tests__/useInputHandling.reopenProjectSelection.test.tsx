@@ -29,6 +29,16 @@ vi.mock('../src/utils/projectRoot.js', async () => {
   };
 });
 
+vi.mock('../src/utils/settingsManager.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/utils/settingsManager.js')>('../src/utils/settingsManager.js');
+  return {
+    ...actual,
+    SettingsManager: vi.fn(() => ({
+      getSettings: vi.fn(() => ({ colorTheme: 'orange' })),
+    })),
+  };
+});
+
 vi.mock('../src/utils/remotePaneActions.js', () => ({
   drainRemotePaneActions: vi.fn(async () => []),
   getCurrentTmuxSessionName: vi.fn(() => null),

@@ -71,6 +71,10 @@ function sanitizeLoadedSettings(value: unknown): DmuxSettings {
     sanitized.enableAutopilotByDefault = parsed.enableAutopilotByDefault;
   }
 
+  if (typeof parsed.promptForGitOptionsOnCreate === 'boolean') {
+    sanitized.promptForGitOptionsOnCreate = parsed.promptForGitOptionsOnCreate;
+  }
+
   if (
     typeof parsed.defaultAgent === 'string'
     && (parsed.defaultAgent === '' || isAgentName(parsed.defaultAgent))

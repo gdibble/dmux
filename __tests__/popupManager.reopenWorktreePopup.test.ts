@@ -70,18 +70,45 @@ describe('PopupManager launchReopenWorktreePopup', () => {
       '/tmp/project-selected'
     );
   });
-});
 
-describe('PopupManager launchSingleAgentChoicePopup', () => {
-  it('uses the single-agent popup with the configured default agent', async () => {
+  it('enables remote branches by default', async () => {
     const manager = createPopupManager(['claude', 'codex']) as any;
     manager.checkPopupSupport = vi.fn(() => true);
     manager.launchPopup = vi.fn().mockResolvedValue({
       success: false,
       cancelled: true,
     });
-    manager.config.settingsManager.getSettings = () => ({
-      defaultAgent: 'codex',
+
+    await manager.launchReopenWorktreePopup([], '/tmp/project-selected');
+
+    expect(manager.launchPopup).toHaveBeenCalledWith(
+      'reopenWorktreePopup.js',
+      [],
+      expect.any(Object),
+      expect.objectContaining({
+        initialState: expect.objectContaining({
+          includeRemoteBranches: true,
+          remoteLoaded: false,
+        }),
+      }),
+      '/tmp/project-selected'
+    );
+  });
+});
+
+describe('PopupManager launchSingleAgentChoicePopup', () => {
+  it('uses the single-agent popup with the configured default agent', async () => {
+    const manager = createPopupManager(['claude', 'codex']) as any;
+    manager.checkPopupSupport = vi.fn(() => true);
+    manager.getAvailableAgents = vi.fn(() => ['claude', 'codex']);
+    manager.getSettingsManager = vi.fn(() => ({
+      getSettings: () => ({
+        defaultAgent: 'codex',
+      }),
+    }));
+    manager.launchPopup = vi.fn().mockResolvedValue({
+      success: false,
+      cancelled: true,
     });
 
     await manager.launchSingleAgentChoicePopup(

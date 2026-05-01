@@ -18,6 +18,8 @@ import { recalculateAndApplyLayout } from './layoutManager.js';
 import { buildWorktreePaneTitle } from './paneTitle.js';
 import { SettingsManager } from './settingsManager.js';
 import { LogService } from '../services/LogService.js';
+import { installCodexPaneHooks } from './codexHooks.js';
+import { resolveProjectColorTheme } from './paneColors.js';
 
 export interface AttachAgentOptions {
   targetPane: DmuxPane;
@@ -135,6 +137,24 @@ export async function attachAgentToWorktree(
   // Small delay for cd to complete
   await new Promise(r => setTimeout(r, 300));
 
+  const dmuxPaneId = `dmux-${Date.now()}`;
+  let codexHookEventFile: string | undefined;
+  if (agent === 'codex') {
+    try {
+      codexHookEventFile = installCodexPaneHooks({
+        worktreePath: targetPane.worktreePath,
+        dmuxPaneId,
+        tmuxPaneId: paneInfo,
+      }).eventFile;
+    } catch (error) {
+      LogService.getInstance().warn(
+        `Failed to install Codex hooks for ${slug}: ${error instanceof Error ? error.message : String(error)}`,
+        'attachAgent',
+        dmuxPaneId
+      );
+    }
+  }
+
   // Launch the agent
   await launchAgentInPane({
     paneId: paneInfo,
@@ -142,6 +162,8 @@ export async function attachAgentToWorktree(
     prompt,
     slug,
     projectRoot,
+    dmuxPaneId,
+    codexHookEventFile,
     permissionMode: settings.permissionMode,
   });
 
@@ -157,13 +179,14 @@ export async function attachAgentToWorktree(
 
   // Build the sibling pane object — shares worktree/branch with target
   const newPane: DmuxPane = {
-    id: `dmux-${Date.now()}`,
+    id: dmuxPaneId,
     slug,
     branchName: targetPane.branchName,
     prompt: prompt || 'No initial prompt',
     paneId: paneInfo,
     projectRoot,
     projectName: targetPane.projectName,
+    colorTheme: targetPane.colorTheme || resolveProjectColorTheme(projectRoot, []),
     worktreePath: targetPane.worktreePath,
     agent,
     permissionMode: settings.permissionMode,

@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo } from "react"
+import React, { useState, useEffect, useMemo, useRef } from "react"
 import { Box, Text, useApp, useStdout, useInput } from "ink"
+import stringWidth from "string-width"
 import { TmuxService } from "./services/TmuxService.js"
 
 // Hooks
@@ -69,9 +70,12 @@ import { setLocale, t, type Locale } from "./i18n/index.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
+const ACTIVE_PANE_SYNC_INTERVAL_MS = 125
 import type {
   DmuxPane,
   DmuxAppProps,
+  NewPaneInput,
+  DmuxThemeName,
   MergeTargetReference,
 } from "./types.js"
 import PanesGrid from "./components/panes/PanesGrid.js"
@@ -85,8 +89,28 @@ import {
   buildVisualNavigationRows,
   buildGroupStartRows,
   getProjectActionByIndex,
+  resolveSelectionAfterPaneClose,
 } from "./utils/projectActions.js"
 import { getPaneProjectRoot } from "./utils/paneProject.js"
+import {
+  applyDmuxTheme,
+  getDmuxThemePalette,
+} from "./theme/colors.js"
+import {
+  applyTmuxThemeToSession,
+  refreshWelcomePaneTheme,
+} from "./utils/welcomePane.js"
+import { syncWelcomePaneVisibility } from "./utils/welcomePaneManager.js"
+import {
+  getPaneColorTheme,
+  resolveProjectColorTheme,
+} from "./utils/paneColors.js"
+import {
+  getPaneTitlePrefixValue,
+  paneNeedsAnimatedTitlePrefix,
+  PANE_TITLE_BUSY_FRAMES,
+} from "./utils/paneTitlePrefix.js"
+import { getPaneTmuxDisplayTitle } from "./utils/paneTitle.js"
 
 const DmuxApp: React.FC<DmuxAppProps> = ({
   panesFile,
@@ -104,6 +128,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   /* panes state moved to usePanes */
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null)
   const { statusMessage, setStatusMessage } = useStatusMessages()
   const [isCreatingPane, setIsCreatingPane] = useState(false)
   const {
@@ -114,15 +139,14 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   // Settings state
   const [settingsManager] = useState(() => new SettingsManager(projectRoot))
   const { projectSettings, saveSettings } = useProjectSettings(settingsFile)
-  
-  // Memoize settings to avoid unnecessary recalculations
-  // Recalculate when projectSettings change
-  const settings = useMemo(() => {
-    return settingsManager.getSettings()
-  }, [settingsManager, projectSettings])
+  const [themeRefreshNonce, setThemeRefreshNonce] = useState(0)
+  const [settings, setSettings] = useState(() => new SettingsManager(sessionProjectRoot).getSettings())
+  const paneTitlePrefixCacheRef = useRef(new Map<string, string>())
+  const paneTitleLabelCacheRef = useRef(new Map<string, string>())
+  const paneActiveBorderStyleCacheRef = useRef(new Map<string, string>())
+  const paneTitleSpinnerFrameRef = useRef(0)
 
-  // Apply i18n language setting
-  // Use a separate effect to handle language changes reactively
+  // Apply i18n language reactively when the locale setting changes.
   useEffect(() => {
     const language = settings.language || 'en'
     setLocale(language as Locale)
@@ -163,6 +187,8 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const availableAgents = resolveEnabledAgentsSelection(
     settings.enabledAgents
   )
+  const getAvailableAgentsForProject = (targetProjectRoot: string = selectedProjectRoot) =>
+    resolveEnabledAgentsSelection(new SettingsManager(targetProjectRoot).getSettings().enabledAgents)
   const footerTips = useMemo(() => getFooterTips(isDevMode), [isDevMode])
   const showFooterTips = settings.showFooterTips !== false && footerTips.length > 0
   const [footerTipIndex, setFooterTipIndex] = useState(() => getRandomFooterTipIndex(footerTips.length))
@@ -242,6 +268,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     loadPanes,
     savePanes,
     saveSidebarProjects,
+    eventMode,
   } = usePanes(
     panesFile,
     false,
@@ -254,7 +281,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   useEffect(() => {
     const checkHooksPreference = async () => {
       // Check if user already has a preference
-      const settings = settingsManager.getSettings()
+      const settings = new SettingsManager(sessionProjectRoot).getSettings()
 
       if (settings.useTmuxHooks !== undefined) {
         // User has already decided
@@ -273,6 +300,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         setUseHooks(true)
         // Save the preference
         settingsManager.updateSetting('useTmuxHooks', true, 'global')
+        refreshDmuxSettings()
       } else {
         // Need to ask user - show prompt
         setShowHooksPrompt(true)
@@ -517,8 +545,17 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     ),
     [panes, sidebarProjects, sessionProjectRoot, projectName]
   )
+  const selectedPane = useMemo(() => {
+    for (const group of projectActionLayout.groups) {
+      const entry = group.panes.find((candidate) => candidate.index === selectedIndex)
+      if (entry) {
+        return entry.pane
+      }
+    }
+
+    return undefined
+  }, [projectActionLayout.groups, selectedIndex])
   const selectedProjectRoot = useMemo(() => {
-    const selectedPane = selectedIndex < panes.length ? panes[selectedIndex] : undefined
     if (selectedPane) {
       return getPaneProjectRoot(selectedPane, sessionProjectRoot)
     }
@@ -527,7 +564,54 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       getProjectActionByIndex(projectActionLayout.actionItems, selectedIndex)?.projectRoot
       || sessionProjectRoot
     )
-  }, [selectedIndex, panes, projectActionLayout.actionItems, sessionProjectRoot])
+  }, [selectedPane, selectedIndex, projectActionLayout.actionItems, sessionProjectRoot])
+  const focusedPane = useMemo(
+    () => focusedPaneId
+      ? panes.find((pane) => pane.paneId === focusedPaneId)
+      : undefined,
+    [focusedPaneId, panes]
+  )
+  const activeProjectRoot = selectedProjectRoot
+  const resolveProjectThemeName = React.useCallback((activeProjectRoot: string) => {
+    return resolveProjectColorTheme(activeProjectRoot, sidebarProjects)
+  }, [sidebarProjects])
+  const activeBorderPane = focusedPane || selectedPane
+  const activeBorderPaneId = activeBorderPane?.paneId
+  const selectedThemeName = useMemo(
+    () => resolveProjectThemeName(activeProjectRoot),
+    [
+      resolveProjectThemeName,
+      activeProjectRoot,
+      themeRefreshNonce,
+    ]
+  )
+  const visiblePaneCount = useMemo(
+    () => panes.filter((pane) => !pane.hidden).length,
+    [panes]
+  )
+  const controlPaneActiveBorderStyle = useMemo(
+    () => `fg=colour${getDmuxThemePalette(selectedThemeName).activeBorder}`,
+    [selectedThemeName]
+  )
+  const projectThemeByRoot = useMemo(() => {
+    const themeMap = new Map<string, DmuxThemeName>()
+
+    for (const group of projectActionLayout.groups) {
+      const paneTheme = group.panes.find((entry) => entry.pane.colorTheme)?.pane.colorTheme
+      themeMap.set(
+        group.projectRoot,
+        paneTheme || resolveProjectThemeName(group.projectRoot)
+      )
+    }
+
+    return themeMap
+  }, [projectActionLayout.groups, resolveProjectThemeName, themeRefreshNonce])
+  applyDmuxTheme(selectedThemeName)
+
+  const refreshDmuxSettings = (_activeProjectRoot: string = selectedProjectRoot) => {
+    setSettings(new SettingsManager(sessionProjectRoot).getSettings())
+    setThemeRefreshNonce((current) => current + 1)
+  }
   const navigationRows = useMemo(
     () => isLoading
       ? projectActionLayout.groups.flatMap((group) =>
@@ -542,6 +626,168 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   )
 
   useEffect(() => {
+    try {
+      applyTmuxThemeToSession(sessionName, activeProjectRoot, selectedThemeName)
+    } catch {
+      // Theme updates are best-effort at runtime.
+    }
+
+    void refreshWelcomePaneTheme(panesFile, activeProjectRoot, selectedThemeName)
+  }, [panesFile, activeProjectRoot, selectedThemeName, sessionName])
+
+  useEffect(() => {
+    if (isLoading) {
+      return
+    }
+
+    void syncWelcomePaneVisibility(
+      sessionProjectRoot,
+      controlPaneId,
+      visiblePaneCount === 0,
+      selectedThemeName
+    )
+  }, [
+    controlPaneId,
+    isLoading,
+    selectedThemeName,
+    sessionProjectRoot,
+    visiblePaneCount,
+  ])
+
+  useEffect(() => {
+    if (!process.env.TMUX) {
+      return
+    }
+
+    const tmuxService = TmuxService.getInstance()
+    const syncPaneTitlePrefixes = () => {
+      const cachedPrefixes = paneTitlePrefixCacheRef.current
+      const cachedLabels = paneTitleLabelCacheRef.current
+      const cachedActiveBorderStyles = paneActiveBorderStyleCacheRef.current
+      const activePaneIds = new Set(panes.map((pane) => pane.paneId))
+      const activeBorderStylePaneIds = new Set(activePaneIds)
+      if (controlPaneId) {
+        activeBorderStylePaneIds.add(controlPaneId)
+      }
+
+      for (const paneId of Array.from(cachedPrefixes.keys())) {
+        if (!activePaneIds.has(paneId)) {
+          tmuxService.unsetPaneOptionSync(paneId, '@dmux_title_prefix')
+          cachedPrefixes.delete(paneId)
+        }
+      }
+      for (const paneId of Array.from(cachedLabels.keys())) {
+        if (!activePaneIds.has(paneId)) {
+          tmuxService.unsetPaneOptionSync(paneId, '@dmux_title_label')
+          cachedLabels.delete(paneId)
+        }
+      }
+      for (const paneId of Array.from(cachedActiveBorderStyles.keys())) {
+        if (!activeBorderStylePaneIds.has(paneId)) {
+          tmuxService.unsetPaneOptionSync(paneId, '@dmux_active_border_style')
+          cachedActiveBorderStyles.delete(paneId)
+        }
+      }
+
+      for (const pane of panes) {
+        const paneThemeName = getPaneColorTheme(
+          pane,
+          sidebarProjects,
+          sessionProjectRoot
+        )
+        const prefixValue = getPaneTitlePrefixValue(
+          pane,
+          sidebarProjects,
+          sessionProjectRoot,
+          paneTitleSpinnerFrameRef.current
+        )
+        const labelValue = getPaneTmuxDisplayTitle(
+          pane,
+          sessionProjectRoot,
+          projectName
+        )
+        const activeBorderStyle = `fg=colour${getDmuxThemePalette(paneThemeName).activeBorder}`
+
+        if (cachedPrefixes.get(pane.paneId) !== prefixValue) {
+          tmuxService.setPaneOptionSync(pane.paneId, '@dmux_title_prefix', prefixValue)
+          cachedPrefixes.set(pane.paneId, prefixValue)
+        }
+
+        if (cachedLabels.get(pane.paneId) !== labelValue) {
+          tmuxService.setPaneOptionSync(pane.paneId, '@dmux_title_label', labelValue)
+          cachedLabels.set(pane.paneId, labelValue)
+        }
+
+        if (cachedActiveBorderStyles.get(pane.paneId) !== activeBorderStyle) {
+          tmuxService.setPaneOptionSync(
+            pane.paneId,
+            '@dmux_active_border_style',
+            activeBorderStyle
+          )
+          cachedActiveBorderStyles.set(pane.paneId, activeBorderStyle)
+        }
+
+        if (pane.paneId === activeBorderPaneId) {
+          tmuxService.setSessionOptionSync(
+            sessionName,
+            'pane-active-border-style',
+            activeBorderStyle
+          )
+        }
+      }
+
+      if (controlPaneId && cachedActiveBorderStyles.get(controlPaneId) !== controlPaneActiveBorderStyle) {
+        tmuxService.setPaneOptionSync(
+          controlPaneId,
+          '@dmux_active_border_style',
+          controlPaneActiveBorderStyle
+        )
+        cachedActiveBorderStyles.set(controlPaneId, controlPaneActiveBorderStyle)
+      }
+
+      if (!focusedPane) {
+        tmuxService.setSessionOptionSync(
+          sessionName,
+          'pane-active-border-style',
+          controlPaneActiveBorderStyle
+        )
+      }
+    }
+
+    const hasAnimatedPrefix = panes.some(paneNeedsAnimatedTitlePrefix)
+    if (!hasAnimatedPrefix) {
+      paneTitleSpinnerFrameRef.current = 0
+    }
+
+    syncPaneTitlePrefixes()
+
+    if (!hasAnimatedPrefix) {
+      return
+    }
+
+    const interval = setInterval(() => {
+      paneTitleSpinnerFrameRef.current = (
+        paneTitleSpinnerFrameRef.current + 1
+      ) % PANE_TITLE_BUSY_FRAMES.length
+      syncPaneTitlePrefixes()
+    }, 90)
+
+    return () => {
+      clearInterval(interval)
+    }
+  }, [
+    panes,
+    sidebarProjects,
+    sessionProjectRoot,
+    projectName,
+    activeBorderPaneId,
+    sessionName,
+    controlPaneId,
+    controlPaneActiveBorderStyle,
+    focusedPane,
+  ])
+
+  useEffect(() => {
     const maxIndex = Math.max(0, projectActionLayout.totalItems - 1)
     if (selectedIndex > maxIndex) {
       setSelectedIndex(maxIndex)
@@ -553,6 +799,62 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   // findCardInDirection provided by useNavigation
 
+  const syncSelectedIndexToFocusedPane = React.useCallback(async (activePaneId?: string | null) => {
+    try {
+      const focusedPaneId = activePaneId ?? await TmuxService.getInstance().getActivePaneId()
+      if (!focusedPaneId || focusedPaneId === controlPaneId) {
+        setFocusedPaneId(null)
+        return
+      }
+
+      setFocusedPaneId((currentPaneId) =>
+        currentPaneId === focusedPaneId ? currentPaneId : focusedPaneId
+      )
+
+      const focusedIndex = panes.findIndex((pane) => pane.paneId === focusedPaneId)
+      if (focusedIndex === -1) {
+        return
+      }
+
+      setSelectedIndex((currentIndex) =>
+        currentIndex === focusedIndex ? currentIndex : focusedIndex
+      )
+    } catch {
+      // Focus sync is best-effort; pane lifecycle handling will correct stale IDs.
+    }
+  }, [controlPaneId, panes])
+
+  useEffect(() => {
+    const paneEventService = PaneEventService.getInstance()
+    return paneEventService.onPaneFocusChanged((event) => {
+      void syncSelectedIndexToFocusedPane(event.activePaneId)
+    })
+  }, [syncSelectedIndexToFocusedPane])
+
+  useEffect(() => {
+    if (!process.env.TMUX || panes.length === 0) {
+      return
+    }
+
+    let syncInFlight = false
+    const syncActivePane = () => {
+      if (syncInFlight) {
+        return
+      }
+
+      syncInFlight = true
+      void syncSelectedIndexToFocusedPane().finally(() => {
+        syncInFlight = false
+      })
+    }
+
+    syncActivePane()
+    const interval = setInterval(syncActivePane, ACTIVE_PANE_SYNC_INTERVAL_MS)
+    return () => {
+      clearInterval(interval)
+    }
+  }, [eventMode, panes.length, syncSelectedIndexToFocusedPane])
+
   // savePanes moved to usePanes
 
   // applySmartLayout moved to utils/tmux
@@ -561,12 +863,13 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const selectAgentsForPaneCreation = async (
     targetProjectRoot?: string
   ): Promise<AgentName[] | null> => {
-    if (availableAgents.length === 0) {
+    const targetRoot = targetProjectRoot || selectedProjectRoot
+    if (getAvailableAgentsForProject(targetRoot).length === 0) {
       return []
     }
 
     const selectedAgents = await popupManager.launchAgentChoicePopup(
-      targetProjectRoot || selectedProjectRoot
+      targetRoot
     )
     if (selectedAgents === null) {
       return null
@@ -581,7 +884,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   }
 
   const createPaneSelection = async (
-    prompt: string,
+    paneInput: NewPaneInput,
     selectedAgents: AgentName[],
     targetProjectRoot?: string,
     createOptions?: {
@@ -590,7 +893,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     }
   ): Promise<number> => {
     if (selectedAgents.length === 0) {
-      const pane = await createNewPaneHook(prompt, undefined, {
+      const pane = await createNewPaneHook(paneInput, undefined, {
         targetProjectRoot,
         skipAgentSelection: true,
         startPointBranch: createOptions?.startPointBranch,
@@ -599,7 +902,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       return pane ? 1 : 0
     }
 
-    const createdPanes = await createPanesForAgentsHook(prompt, selectedAgents, {
+    const createdPanes = await createPanesForAgentsHook(paneInput, selectedAgents, {
       existingPanes: panes,
       targetProjectRoot,
       startPointBranch: createOptions?.startPointBranch,
@@ -609,7 +912,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   }
 
   const handlePaneCreationWithAgent = async (
-    prompt: string,
+    paneInput: NewPaneInput,
     targetProjectRoot?: string,
     createOptions?: {
       startPointBranch?: string
@@ -622,7 +925,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     }
 
     await createPaneSelection(
-      prompt,
+      paneInput,
       selectedAgents,
       targetProjectRoot,
       createOptions
@@ -637,8 +940,8 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     }
 
     const targetProjectRoot = getPaneProjectRoot(parentPane, sessionProjectRoot)
-    const promptValue = await popupManager.launchNewPanePopup(targetProjectRoot)
-    if (!promptValue) {
+    const paneInput = await popupManager.launchNewPanePopup(targetProjectRoot)
+    if (!paneInput) {
       return
     }
 
@@ -649,7 +952,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
     const createSubWorktree = async (): Promise<ActionResult> => {
       const createdCount = await createPaneSelection(
-        promptValue,
+        paneInput,
         selectedAgents,
         targetProjectRoot,
         {
@@ -757,7 +1060,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     let selectedAgent: AgentName | undefined
 
     if (!candidate.path) {
-      if (availableAgents.length === 0) {
+      if (getAvailableAgentsForProject(reopenProjectRoot).length === 0) {
         setStatusMessage("No enabled agents available for opening this branch")
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
         return
@@ -927,7 +1230,8 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         result.message,
         result.placeholder,
         result.defaultValue,
-        selectedProjectRoot
+        selectedProjectRoot,
+        result.inputMaxVisibleLines
       )
       if (inputValue !== null) {
         const nextResult = await trackProjectActivity(
@@ -935,6 +1239,30 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
           selectedProjectRoot
         )
         // Recursively handle nested results
+        if (nextResult) {
+          await handleActionResult(nextResult)
+        }
+      }
+    } else if (result.type === "pr_review") {
+      if (!result.onSubmit || !result.reviewData) return
+      const inputValue = await popupManager.launchPRReviewPopup(
+        {
+          title: result.title || "Pull Request",
+          message: result.message || "",
+          defaultValue: result.defaultValue || "",
+          repoPath: result.reviewData.repoPath,
+          sourceBranch: result.reviewData.sourceBranch,
+          targetBranch: result.reviewData.targetBranch,
+          files: result.reviewData.files,
+          aiFailed: result.reviewData.aiFailed,
+        },
+        selectedProjectRoot
+      )
+      if (inputValue !== null) {
+        const nextResult = await trackProjectActivity(
+          () => result.onSubmit!(inputValue),
+          selectedProjectRoot
+        )
         if (nextResult) {
           await handleActionResult(nextResult)
         }
@@ -980,28 +1308,32 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     projectName,
     defaultProjectRoot: sessionProjectRoot,
     onPaneRemove: async (paneId) => {
-      // Mark pane as closing to prevent race condition with worker
-      await lifecycleManager.beginClose(paneId, 'user requested')
+      const nextSelection = resolveSelectionAfterPaneClose(
+        panes,
+        paneId,
+        sidebarProjects,
+        sessionProjectRoot,
+        projectName
+      )
 
-      // Adjust selectedIndex before removing from list
-      const removedIndex = panes.findIndex((p) => p.paneId === paneId)
-      if (removedIndex >= 0 && selectedIndex >= panes.length - 1) {
-        setSelectedIndex(Math.max(0, panes.length - 2))
+      if (nextSelection) {
+        setSelectedIndex(nextSelection.selectedIndex)
+      } else {
+        const maxIndex = Math.max(0, projectActionLayout.totalItems - 2)
+        if (selectedIndex > maxIndex) {
+          setSelectedIndex(maxIndex)
+        }
       }
 
-      // Remove from panes list
-      const updatedPanes = panes.filter((p) => p.paneId !== paneId)
-      savePanes(updatedPanes)
+      const targetPaneId = nextSelection?.pane && !nextSelection.pane.hidden
+        ? nextSelection.pane.paneId
+        : controlPaneId
 
-      // Mark close as completed (no more lock needed)
-      await lifecycleManager.completeClose(paneId)
-
-      // Return focus to control pane
-      if (controlPaneId) {
+      if (targetPaneId) {
         try {
-          await TmuxService.getInstance().selectPane(controlPaneId)
+          await TmuxService.getInstance().selectPane(targetPaneId)
         } catch {
-          // Ignore - control pane might not exist
+          // Ignore - the target pane might have closed during cleanup
         }
       }
     },
@@ -1012,6 +1344,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
           launchConfirmPopup: popupManager.launchConfirmPopup.bind(popupManager),
           launchChoicePopup: popupManager.launchChoicePopup.bind(popupManager),
           launchInputPopup: popupManager.launchInputPopup.bind(popupManager),
+          launchPRReviewPopup: popupManager.launchPRReviewPopup.bind(popupManager),
           launchProgressPopup:
             popupManager.launchProgressPopup.bind(popupManager),
         }
@@ -1150,17 +1483,20 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         setShowHooksPrompt(false)
         setUseHooks(true)
         settingsManager.updateSetting('useTmuxHooks', true, 'global')
+        refreshDmuxSettings()
       } else if (input === 'n') {
         // No - use polling
         setShowHooksPrompt(false)
         setUseHooks(false)
         settingsManager.updateSetting('useTmuxHooks', false, 'global')
+        refreshDmuxSettings()
       } else if (key.return) {
         // Select current option
         setShowHooksPrompt(false)
         const selected = hooksPromptIndex === 0
         setUseHooks(selected)
         settingsManager.updateSetting('useTmuxHooks', selected, 'global')
+        refreshDmuxSettings()
       }
     },
     { isActive: showHooksPrompt }
@@ -1191,6 +1527,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     projectSettings,
     saveSettings,
     settingsManager,
+    refreshDmuxSettings,
     popupManager,
     actionSystem,
     controlPaneId,
@@ -1207,9 +1544,10 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     saveSidebarProjects,
     loadPanes,
     cleanExit,
-    availableAgents,
+    getAvailableAgentsForProject,
     panesFile,
     projectRoot: sessionProjectRoot,
+    activeProjectRoot: selectedProjectRoot,
     projectActionItems: projectActionLayout.actionItems,
     findCardInDirection,
   })
@@ -1220,7 +1558,8 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   // - Normal mode calculation:
   //   - Base footer: 4 lines (marginTop + logs divider + logs line + keyboard shortcuts)
   //   - Footer tip: +1 line when footer tips are enabled
-  //   - Toast: +2 lines (toast message + marginBottom) if currentToast exists
+  //   - Toast (active): wrapped lines + header + marginBottom
+  //   - Toast (queued, transitioning): header + marginBottom (2 lines)
   //   - Debug info: +1 line if DEBUG_DMUX
   //   - Status line: +1 line if updateAvailable/currentBranch/debugMessage
   //   - Status messages: +1 line per active message
@@ -1232,7 +1571,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     footerLines = 0
 
     if (showFooterHelp) {
-      footerLines = 4 // marginTop + logs divider + logs + shortcuts
+      footerLines = 3 // logs divider + logs + shortcuts
 
       if (currentFooterTip) {
         footerLines += 1
@@ -1241,14 +1580,19 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       // Add toast notification (calculate wrapped lines + header)
       if (currentToast) {
         // Toast format: "✓ message" - icon (1) + space (1) + message
-        const iconAndSpaceLength = 2;
-        const toastTextLength = iconAndSpaceLength + currentToast.message.length;
+        // Use stringWidth for CJK-aware display width calculation
+        const iconAndSpaceWidth = 2;
+        const toastDisplayWidth = iconAndSpaceWidth + stringWidth(currentToast.message);
 
         // Available width is sidebar width (40) minus padding/margins (~2)
         const availableWidth = SIDEBAR_WIDTH - 2;
-        const wrappedLines = Math.ceil(toastTextLength / availableWidth);
+        const wrappedLines = Math.ceil(toastDisplayWidth / availableWidth);
 
         footerLines += wrappedLines + 1 + 1; // wrapped lines + header line + marginBottom
+      } else if (toastQueueLength > 0) {
+        // When there are queued toasts but no current toast (transition state),
+        // FooterHelp still renders the notification header + marginBottom
+        footerLines += 1 + 1; // header line + marginBottom
       }
 
       // Add debug info
@@ -1272,13 +1616,16 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const contentHeight = Math.max(terminalHeight - footerLines, 10)
 
   return (
-    <Box flexDirection="column" height={terminalHeight}>
+    <Box key={`theme-${selectedThemeName}-${themeRefreshNonce}`} flexDirection="column" height={terminalHeight}>
       {/* Main content area - height dynamically adjusts for status messages */}
       <Box flexDirection="column" height={contentHeight} overflow="hidden">
         <PanesGrid
           panes={panes}
           selectedIndex={selectedIndex}
+          activeProjectRoot={activeProjectRoot}
           isLoading={isLoading}
+          themeName={selectedThemeName}
+          projectThemeByRoot={projectThemeByRoot}
           agentStatuses={agentStatuses}
           activeDevSourcePath={activeDevSourcePath}
           sidebarProjects={sidebarProjects}

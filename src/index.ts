@@ -5,7 +5,6 @@ import chalk from 'chalk';
 import fs from 'fs/promises';
 import * as fsSync from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { render } from 'ink';
 import React from 'react';
 import { createHash } from 'crypto';
@@ -17,8 +16,11 @@ import { AutoUpdater } from './services/AutoUpdater.js';
 import { StateManager } from './shared/StateManager.js';
 import { LogService } from './services/LogService.js';
 import { TmuxService } from './services/TmuxService.js';
-import { createWelcomePane, destroyWelcomePane } from './utils/welcomePane.js';
-import { TMUX_COLORS } from './theme/colors.js';
+import {
+  applyTmuxThemeToSession,
+  createWelcomePane,
+  destroyWelcomePane,
+} from './utils/welcomePane.js';
 import { SIDEBAR_WIDTH } from './utils/layoutManager.js';
 import { validateSystemRequirements, printValidationResults } from './utils/systemCheck.js';
 import { getUntrackedPanes } from './utils/shellPaneDetection.js';
@@ -26,14 +28,23 @@ import { runFirstRunOnboardingIfNeeded } from './utils/onboarding.js';
 import { atomicWriteJson } from './utils/atomicWrite.js';
 import { buildDevWatchCommand, buildDevWatchRespawnCommand } from './utils/devWatchCommand.js';
 import { shouldUseQuietDevWatchExit } from './utils/devWatchExit.js';
-import { buildPaneExitedHookCommandForSession } from './utils/tmuxHookCommands.js';
+import {
+  buildPaneExitedHookCommandForSession,
+  buildPaneFocusHookCommandForSession,
+} from './utils/tmuxHookCommands.js';
 import { ensureTmuxRuntimeCompatibility } from './utils/tmuxRuntimeCompatibility.js';
 import { claimProcessShutdown } from './utils/processShutdown.js';
+import { sendTmuxShellCommand } from './utils/tmuxSendKeys.js';
+import { buildDmuxCommand } from './utils/dmuxCommand.js';
+import { sanitizePathForInstalledDmux } from './utils/pathEnvironment.js';
 import {
   addSidebarProject,
+  getAutoSidebarProjectColorTheme,
+  getSidebarProjectColorTheme,
   hasSidebarProject,
   normalizeSidebarProjects,
 } from './utils/sidebarProjects.js';
+import { SettingsManager } from './utils/settingsManager.js';
 import {
   buildRemotePaneActionBindingCommands,
   buildRemotePaneActionCleanupCommands,
@@ -53,9 +64,12 @@ import {
   type AgentName,
 } from './utils/agentLaunch.js';
 import { TMUX_PANE_TITLE_DISPLAY_FORMAT } from './utils/paneTitle.js';
+import {
+  TMUX_PANE_TITLE_LABEL_FORMAT,
+  TMUX_PANE_TITLE_PREFIX_FORMAT,
+} from './utils/paneTitlePrefix.js';
 import type { DmuxConfig, DmuxPane } from './types.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json');
 
@@ -201,6 +215,7 @@ class Dmux {
 
     if (inTmux) {
       ensureTmuxRuntimeCompatibility(sessionNameForCurrentTmux);
+      this.setSessionPathEnvironment(sessionNameForCurrentTmux);
     }
 
     // Running dmux from another project while already inside a dmux session:
@@ -253,6 +268,7 @@ class Dmux {
     if (inTmux) {
       this.setupResizeHook(sessionNameForCurrentTmux);
       this.setupPaneSplitHook(sessionNameForCurrentTmux);
+      this.setupPaneFocusHook(sessionNameForCurrentTmux);
     }
 
     if (!inTmux) {
@@ -273,6 +289,7 @@ class Dmux {
 
       if (sessionExists) {
         ensureTmuxRuntimeCompatibility(this.sessionName);
+        this.setSessionPathEnvironment(this.sessionName);
         this.applySessionPaneBorderOptions(this.sessionName, 'pipe');
         // Existing session:
         // In dev mode, always ensure watcher loop is running from the intended source.
@@ -296,6 +313,7 @@ class Dmux {
         // Create new session first
         execSync(`tmux new-session -d -s ${this.sessionName}`, { stdio: 'inherit' });
         ensureTmuxRuntimeCompatibility(this.sessionName);
+        this.setSessionPathEnvironment(this.sessionName);
         // Batch all session configuration commands into a single tmux call for faster startup
         // This reduces 5 process spawns to 1, significantly improving startup time
         this.applySessionPaneBorderOptions(this.sessionName, 'inherit');
@@ -306,19 +324,10 @@ class Dmux {
         if (isDev) {
           dmuxCommand = buildDevWatchCommand(devDirectory);
         } else {
-          // Check if we're running from a local installation
-          // __dirname is 'dist' when compiled, so '../dmux' points to the wrapper
-          const localDmuxPath = path.join(__dirname, '..', 'dmux');
-          if (fsSync.existsSync(localDmuxPath)) {
-            // Use absolute path to local dmux (works for both local builds and global installs)
-            dmuxCommand = `"${localDmuxPath}"`;
-          } else {
-            // Fallback to global dmux command
-            dmuxCommand = 'dmux';
-          }
+          dmuxCommand = buildDmuxCommand([], this.projectRoot);
         }
 
-        execSync(`tmux send-keys -t ${this.sessionName} "${dmuxCommand}" Enter`, { stdio: 'inherit' });
+        sendTmuxShellCommand(this.sessionName, dmuxCommand, 'inherit');
       }
       execSync(`tmux attach-session -t ${this.sessionName}`, { stdio: 'inherit' });
       return;
@@ -988,6 +997,16 @@ class Dmux {
       latestConfig.sidebarProjects = addSidebarProject(normalizedProjects, {
         projectName: this.projectName,
         projectRoot: this.projectRoot,
+        colorTheme: getAutoSidebarProjectColorTheme(
+          normalizedProjects,
+          {
+            projectRoot: this.projectRoot,
+          },
+          (targetProjectRoot) =>
+            getSidebarProjectColorTheme(normalizedProjects, targetProjectRoot)
+            || new SettingsManager(targetProjectRoot).getSettings().colorTheme
+        ),
+        colorThemeSource: 'auto',
       });
       latestConfig.lastUpdated = new Date().toISOString();
       await atomicWriteJson(context.sessionConfigPath, latestConfig);
@@ -1135,11 +1154,11 @@ class Dmux {
       const oldPanesFile = path.join(homeDmuxDir, `${projectIdentifier}-panes.json`);
       const oldSettingsFile = path.join(homeDmuxDir, `${projectIdentifier}-settings.json`);
       const oldUpdateSettingsFile = path.join(homeDmuxDir, 'update-settings.json');
-      
+
       let panes = [];
       let settings = {};
       let updateSettings = {};
-      
+
       // Try to read old panes file
       if (await this.fileExists(oldPanesFile)) {
         try {
@@ -1149,7 +1168,7 @@ class Dmux {
           // Intentionally silent - migration is best-effort
         }
       }
-      
+
       // Try to read old settings file
       if (await this.fileExists(oldSettingsFile)) {
         try {
@@ -1159,7 +1178,7 @@ class Dmux {
           // Intentionally silent - migration is best-effort
         }
       }
-      
+
       // Try to read old update settings file
       if (await this.fileExists(oldUpdateSettingsFile)) {
         try {
@@ -1169,7 +1188,7 @@ class Dmux {
           // Intentionally silent - migration is best-effort
         }
       }
-      
+
       // Check for config from previous parent directory location
       if (await this.fileExists(oldParentConfigFile)) {
         try {
@@ -1257,12 +1276,20 @@ class Dmux {
   private applySessionPaneBorderOptions(sessionName: string, stdio: 'pipe' | 'inherit' = 'pipe') {
     const sessionOptions = [
       `set-option -t ${sessionName} pane-border-status top`,
-      `set-option -t ${sessionName} pane-active-border-style "fg=colour${TMUX_COLORS.activeBorder}"`,
-      `set-option -t ${sessionName} pane-border-style "fg=colour${TMUX_COLORS.inactiveBorder}"`,
-      `set-option -t ${sessionName} pane-border-format " #{?@dmux_attention,#[bold]![ready] #[default],}${TMUX_PANE_TITLE_DISPLAY_FORMAT} "`,
+      `set-option -t ${sessionName} pane-border-format " #{?@dmux_attention,#[bold]![ready] #[default],}${TMUX_PANE_TITLE_PREFIX_FORMAT}${TMUX_PANE_TITLE_LABEL_FORMAT} "`,
     ].join(' \\; ');
 
     execSync(`tmux ${sessionOptions}`, { stdio });
+    applyTmuxThemeToSession(sessionName, this.projectRoot);
+  }
+
+  private setSessionPathEnvironment(sessionName: string): void {
+    const cleanPath = sanitizePathForInstalledDmux(process.env.PATH || '', this.projectRoot);
+    if (!cleanPath) return;
+
+    spawnSync('tmux', ['set-environment', '-t', sessionName, 'PATH', cleanPath], {
+      stdio: 'pipe',
+    });
   }
 
   private setupResizeHook(sessionName: string = this.sessionName) {
@@ -1297,6 +1324,22 @@ class Dmux {
     }
   }
 
+  private setupPaneFocusHook(sessionName: string = this.sessionName) {
+    try {
+      const pid = process.pid;
+      const paneFocusHookCommand = buildPaneFocusHookCommandForSession(
+        sessionName,
+        pid
+      );
+      execSync(
+        `tmux set-hook -t '${sessionName}' after-select-pane '${paneFocusHookCommand}'`,
+        { stdio: 'pipe' }
+      );
+    } catch (error) {
+      LogService.getInstance().warn('Failed to set up pane focus hook', 'Setup');
+    }
+  }
+
   private cleanupResizeHook(sessionName: string = this.getCurrentTmuxSessionName() || this.sessionName) {
     try {
       // Remove session-specific hook
@@ -1318,6 +1361,15 @@ class Dmux {
     }
   }
 
+  private cleanupPaneFocusHook(sessionName: string = this.getCurrentTmuxSessionName() || this.sessionName) {
+    try {
+      execSync(`tmux set-hook -u -t '${sessionName}' after-select-pane`, { stdio: 'pipe' });
+      LogService.getInstance().debug('Cleaned up pane focus hook', 'Setup');
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+
   private setupGlobalSignalHandlers() {
     let isCleaningUp = false;
 
@@ -1334,6 +1386,7 @@ class Dmux {
       if (process.env.TMUX) {
         this.cleanupResizeHook();
         this.cleanupPaneSplitHook();
+        this.cleanupPaneFocusHook();
         this.clearRemotePaneModeIndicators();
         this.cleanupRemotePaneActionBindings();
         this.cleanupSessionRuntimeMetadata();

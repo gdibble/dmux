@@ -34,8 +34,13 @@ import {
 const GLOBAL_SETTINGS_PATH = join(homedir(), '.dmux.global.json');
 const TEAM_DEFAULTS_FILENAME = '.dmux.defaults.json';
 const PERMISSION_MODES = ['', 'plan', 'acceptEdits', 'bypassPermissions'] as const;
+const LANGUAGE_OPTIONS = ['en', 'ja'] as const;
 function isPermissionMode(value: string): value is NonNullable<DmuxSettings['permissionMode']> {
   return (PERMISSION_MODES as readonly string[]).includes(value);
+}
+
+function isLanguage(value: string): value is NonNullable<DmuxSettings['language']> {
+  return (LANGUAGE_OPTIONS as readonly string[]).includes(value);
 }
 
 function isValidMaxPaneWidth(value: unknown): value is number {
@@ -104,6 +109,10 @@ function sanitizeLoadedSettings(value: unknown): DmuxSettings {
     sanitized.colorTheme = parsed.colorTheme;
   }
 
+  if (typeof parsed.language === 'string' && isLanguage(parsed.language)) {
+    sanitized.language = parsed.language;
+  }
+
   if (typeof parsed.useTmuxHooks === 'boolean') {
     sanitized.useTmuxHooks = parsed.useTmuxHooks;
   }
@@ -164,6 +173,90 @@ const AGENT_OPTIONS = getAgentDefinitions().map((agent) => ({
 }));
 
 export const DEFAULT_COLOR_THEME_SETTING_KEY = 'defaultColorTheme';
+
+const LOCALIZED_SETTING_TRANSLATIONS: Partial<
+  Record<
+    string,
+    {
+      label: string;
+      description: string;
+      optionLabels?: Record<string, string>;
+    }
+  >
+> = {
+  language: {
+    label: 'settings.language',
+    description: 'settings.languageDescription',
+  },
+  permissionMode: {
+    label: 'settings.permissionMode',
+    description: 'settings.permissionModeDescription',
+    optionLabels: {
+      '': 'settings.permissionModeDefault',
+      plan: 'settings.permissionModePlan',
+      acceptEdits: 'settings.permissionModeAcceptEdits',
+      bypassPermissions: 'settings.permissionModeBypassPermissions',
+    },
+  },
+  enableAutopilotByDefault: {
+    label: 'settings.enableAutopilot',
+    description: 'settings.enableAutopilotDescription',
+  },
+  defaultAgent: {
+    label: 'settings.defaultAgent',
+    description: 'settings.defaultAgentDescription',
+    optionLabels: {
+      '': 'settings.defaultAgentAsk',
+    },
+  },
+  enabledAgents: {
+    label: 'settings.enabledAgents',
+    description: 'settings.enabledAgentsDescription',
+  },
+  enabledNotificationSounds: {
+    label: 'settings.notificationSounds',
+    description: 'settings.notificationSoundsDescription',
+  },
+  showFooterTips: {
+    label: 'settings.showFooterTips',
+    description: 'settings.showFooterTipsDescription',
+  },
+  colorTheme: {
+    label: 'settings.colorTheme',
+    description: 'settings.colorThemeDescription',
+  },
+  useTmuxHooks: {
+    label: 'settings.useTmuxHooks',
+    description: 'settings.useTmuxHooksDescription',
+  },
+  baseBranch: {
+    label: 'settings.baseBranch',
+    description: 'settings.baseBranchDescription',
+  },
+  branchPrefix: {
+    label: 'settings.branchPrefix',
+    description: 'settings.branchPrefixDescription',
+    optionLabels: {
+      '': 'settings.noPrefix',
+    },
+  },
+  promptForGitOptionsOnCreate: {
+    label: 'settings.promptForGitOptionsOnCreate',
+    description: 'settings.promptForGitOptionsOnCreateDescription',
+  },
+  minPaneWidth: {
+    label: 'settings.minPaneWidth',
+    description: 'settings.minPaneWidthDescription',
+  },
+  maxPaneWidth: {
+    label: 'settings.maxPaneWidth',
+    description: 'settings.maxPaneWidthDescription',
+  },
+  hooks: {
+    label: 'settings.manageHooks',
+    description: 'settings.manageHooksDescription',
+  },
+};
 
 export const SETTING_DEFINITIONS: SettingDefinition[] = [
   {
@@ -292,117 +385,29 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
 
 /**
  * Get localized setting definitions using i18n
- * Returns a new array with translated labels and descriptions
+ * Returns a new array with translated labels and descriptions.
  */
 export function getLocalizedSettingDefinitions(): SettingDefinition[] {
-  return [
-    {
-      key: 'language',
-      label: t('settings.language'),
-      description: t('settings.languageDescription'),
-      type: 'select',
-      options: [
-        { value: 'en', label: 'English' },
-        { value: 'ja', label: '日本語' },
-      ],
-    },
-    {
-      key: 'permissionMode',
-      label: t('settings.permissionMode'),
-      description: t('settings.permissionModeDescription'),
-      type: 'select',
-      options: [
-        { value: '', label: t('settings.permissionModeDefault') },
-        { value: 'plan', label: t('settings.permissionModePlan') },
-        { value: 'acceptEdits', label: t('settings.permissionModeAcceptEdits') },
-        { value: 'bypassPermissions', label: t('settings.permissionModeBypassPermissions') },
-      ],
-    },
-    {
-      key: 'enableAutopilotByDefault',
-      label: t('settings.enableAutopilot'),
-      description: t('settings.enableAutopilotDescription'),
-      type: 'boolean',
-    },
-    {
-      key: 'defaultAgent',
-      label: t('settings.defaultAgent'),
-      description: t('settings.defaultAgentDescription'),
-      type: 'select',
-      options: [
-        { value: '', label: t('settings.defaultAgentAsk') },
-        ...AGENT_OPTIONS,
-      ],
-    },
-    {
-      key: 'enabledAgents' as any,
-      label: t('settings.enabledAgents'),
-      description: t('settings.enabledAgentsDescription'),
-      type: 'action' as any,
-    },
-    {
-      key: 'enabledNotificationSounds' as any,
-      label: t('settings.notificationSounds'),
-      description: t('settings.notificationSoundsDescription'),
-      type: 'action' as any,
-    },
-    {
-      key: 'showFooterTips',
-      label: t('settings.showFooterTips'),
-      description: t('settings.showFooterTipsDescription'),
-      type: 'boolean',
-    },
-    {
-      key: 'useTmuxHooks',
-      label: t('settings.useTmuxHooks'),
-      description: t('settings.useTmuxHooksDescription'),
-      type: 'boolean',
-    },
-    {
-      key: 'baseBranch',
-      label: t('settings.baseBranch'),
-      description: t('settings.baseBranchDescription'),
-      type: 'text',
-    },
-    {
-      key: 'branchPrefix',
-      label: t('settings.branchPrefix'),
-      description: t('settings.branchPrefixDescription'),
-      type: 'select',
-      options: [
-        { value: '', label: t('settings.noPrefix') },
-        { value: 'feat/', label: 'feat/' },
-        { value: 'fix/', label: 'fix/' },
-        { value: 'chore/', label: 'chore/' },
-      ],
-    },
-    {
-      key: 'minPaneWidth',
-      label: t('settings.minPaneWidth'),
-      description: t('settings.minPaneWidthDescription'),
-      type: 'number',
-      min: MIN_MIN_PANE_WIDTH,
-      max: MAX_MIN_PANE_WIDTH,
-      step: 1,
-      shiftStep: SHIFT_MIN_PANE_WIDTH_STEP,
-    },
-    {
-      key: 'maxPaneWidth',
-      label: t('settings.maxPaneWidth'),
-      description: t('settings.maxPaneWidthDescription'),
-      type: 'number',
-      min: MIN_MAX_PANE_WIDTH,
-      max: MAX_MAX_PANE_WIDTH,
-      step: 1,
-      shiftStep: SHIFT_MAX_PANE_WIDTH_STEP,
-    },
-    {
-      key: 'hooks' as any,
-      label: t('settings.manageHooks'),
-      description: t('settings.manageHooksDescription'),
-      type: 'action' as any,
-    },
-  ];
+  return SETTING_DEFINITIONS.map((definition) => {
+    const translation = LOCALIZED_SETTING_TRANSLATIONS[definition.key];
+    const localized: SettingDefinition = {
+      ...definition,
+      label: translation ? t(translation.label) : definition.label,
+      description: translation ? t(translation.description) : definition.description,
+    };
+
+    if (definition.options) {
+      localized.options = definition.options.map((option) => {
+        const optionKey = translation?.optionLabels?.[option.value];
+        return {
+          ...option,
+          label: optionKey ? t(optionKey) : option.label,
+        };
+      });
+    }
+
+    return localized;
+  });
 }
 
 export class SettingsManager {
@@ -535,6 +540,9 @@ export class SettingsManager {
     if (key === 'permissionMode' && typeof value === 'string' && !isPermissionMode(value)) {
       throw new Error(`Invalid permissionMode: "${value}"`);
     }
+    if (key === 'language' && (typeof value !== 'string' || !isLanguage(value))) {
+      throw new Error(`Invalid language: "${String(value)}"`);
+    }
     if (key === 'colorTheme' && !isDmuxThemeName(value)) {
       throw new Error(`Invalid colorTheme: "${String(value)}"`);
     }
@@ -610,6 +618,9 @@ export class SettingsManager {
   updateSettings(settings: Partial<DmuxSettings>, scope: SettingsScope): void {
     if (typeof settings.permissionMode === 'string' && !isPermissionMode(settings.permissionMode)) {
       throw new Error(`Invalid permissionMode: "${settings.permissionMode}"`);
+    }
+    if (settings.language !== undefined && !isLanguage(settings.language)) {
+      throw new Error(`Invalid language: "${String(settings.language)}"`);
     }
     if (settings.colorTheme !== undefined && !isDmuxThemeName(settings.colorTheme)) {
       throw new Error(`Invalid colorTheme: "${String(settings.colorTheme)}"`);

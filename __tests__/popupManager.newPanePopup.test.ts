@@ -1,6 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { PopupManager, type PopupManagerConfig } from '../src/services/PopupManager.js';
 import type { AgentName } from '../src/utils/agentLaunch.js';
+import { SettingsManager } from '../src/utils/settingsManager.js';
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function createPopupManager(
   settings: Record<string, unknown> = {},
@@ -20,6 +32,7 @@ function createPopupManager(
       getProjectSettings: () => ({}),
     },
     projectSettings: {},
+    trackProjectActivity: async (fn: () => Promise<any>) => fn(),
   };
 
   return new PopupManager(config, () => {}, () => {});
@@ -27,18 +40,18 @@ function createPopupManager(
 
 describe('PopupManager launchNewPanePopup', () => {
   it('passes git options flag when setting is enabled', async () => {
-    const manager = createPopupManager({ promptForGitOptionsOnCreate: true }) as any;
+    const manager = createPopupManager({ promptForGitOptionsOnCreate: true, enableGoalModeByDefault: true }) as any;
     manager.checkPopupSupport = vi.fn(() => true);
     manager.launchPopup = vi.fn().mockResolvedValue({
       success: true,
-      data: { prompt: 'test prompt', baseBranch: 'develop', branchName: 'feat/LIN-1' },
+      data: { prompt: 'test prompt', baseBranch: 'develop', branchName: 'feat/LIN-1', goalMode: false },
     });
 
     const result = await manager.launchNewPanePopup('/tmp/project');
 
     expect(manager.launchPopup).toHaveBeenCalledWith(
       'newPanePopup.js',
-      ['/tmp/project', '1'],
+      ['/tmp/project', '1', '1'],
       expect.objectContaining({
         title: '  ✨ New Pane — project  ',
       }),
@@ -49,6 +62,7 @@ describe('PopupManager launchNewPanePopup', () => {
       prompt: 'test prompt',
       baseBranch: 'develop',
       branchName: 'feat/LIN-1',
+      goalMode: false,
     });
   });
 
@@ -58,6 +72,7 @@ describe('PopupManager launchNewPanePopup', () => {
     manager.getSettingsManager = vi.fn((projectRoot?: string) => ({
       getSettings: () => ({
         promptForGitOptionsOnCreate: projectRoot === '/tmp/other-project',
+        enableGoalModeByDefault: projectRoot === '/tmp/other-project',
       }),
     }));
     manager.launchPopup = vi.fn().mockResolvedValue({
@@ -69,12 +84,49 @@ describe('PopupManager launchNewPanePopup', () => {
 
     expect(manager.launchPopup).toHaveBeenCalledWith(
       'newPanePopup.js',
-      ['/tmp/other-project', '1'],
+      ['/tmp/other-project', '1', '1'],
       expect.objectContaining({
         title: '  ✨ New Pane — other-project  ',
       }),
       undefined,
       '/tmp/other-project'
+    );
+  });
+
+  it('refreshes main project settings before setting the goal mode default', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dmux-popup-settings-'));
+    tempDirs.push(tempRoot);
+
+    const staleSettingsManager = new SettingsManager(tempRoot);
+    new SettingsManager(tempRoot).updateSetting('enableGoalModeByDefault', true, 'project');
+
+    const config: PopupManagerConfig = {
+      sidebarWidth: 40,
+      projectRoot: tempRoot,
+      popupsSupported: true,
+      isDevMode: false,
+      terminalWidth: 120,
+      terminalHeight: 40,
+      availableAgents: ['claude'],
+      settingsManager: staleSettingsManager,
+      projectSettings: {},
+      trackProjectActivity: async (fn) => fn(),
+    };
+    const manager = new PopupManager(config, () => {}, () => {}) as any;
+    manager.checkPopupSupport = vi.fn(() => true);
+    manager.launchPopup = vi.fn().mockResolvedValue({
+      success: true,
+      data: { prompt: 'prompt' },
+    });
+
+    await manager.launchNewPanePopup(tempRoot);
+
+    expect(manager.launchPopup).toHaveBeenCalledWith(
+      'newPanePopup.js',
+      [tempRoot, '0', '1'],
+      expect.any(Object),
+      undefined,
+      tempRoot
     );
   });
 
@@ -90,7 +142,7 @@ describe('PopupManager launchNewPanePopup', () => {
 
     expect(manager.launchPopup).toHaveBeenCalledWith(
       'newPanePopup.js',
-      ['/tmp/project', '0'],
+      ['/tmp/project', '0', '0'],
       expect.any(Object),
       undefined,
       '/tmp/project'
@@ -115,7 +167,7 @@ describe('PopupManager launchNewPanePopup', () => {
     manager.checkPopupSupport = vi.fn(() => true);
     manager.launchPopup = vi.fn().mockResolvedValue({
       success: true,
-      data: { prompt: 'prompt', baseBranch: '   ', branchName: ' feat/LIN-8 ' },
+      data: { prompt: 'prompt', baseBranch: '   ', branchName: ' feat/LIN-8 ', goalMode: true },
     });
 
     const result = await manager.launchNewPanePopup('/tmp/project');
@@ -123,6 +175,7 @@ describe('PopupManager launchNewPanePopup', () => {
     expect(result).toEqual({
       prompt: 'prompt',
       branchName: 'feat/LIN-8',
+      goalMode: true,
     });
   });
 

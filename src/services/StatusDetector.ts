@@ -5,7 +5,7 @@ import { PaneWorkerManager } from './PaneWorkerManager.js';
 import { PaneAnalyzer } from './PaneAnalyzer.js';
 import type { PaneAnalysis } from './PaneAnalyzer.js';
 import type { OutboundMessage } from '../workers/WorkerMessages.js';
-import type { CodexTurnStoppedPayload } from '../workers/WorkerMessages.js';
+import type { AgentTurnStoppedPayload } from '../workers/WorkerMessages.js';
 import { StateManager } from '../shared/StateManager.js';
 import { LogService } from './LogService.js';
 import { getPaneDisplayName } from '../utils/paneTitle.js';
@@ -73,8 +73,12 @@ export class StatusDetector extends EventEmitter {
       await this.handleAnalysisRequest(paneId, message);
     });
 
+    this.messageBus.subscribe('agent-turn-stopped', async (paneId, message) => {
+      await this.handleAgentTurnStopped(paneId, message);
+    });
+
     this.messageBus.subscribe('codex-turn-stopped', async (paneId, message) => {
-      await this.handleCodexTurnStopped(paneId, message);
+      await this.handleAgentTurnStopped(paneId, message);
     });
 
     // Handle worker errors (silently - don't log to console)
@@ -151,11 +155,11 @@ export class StatusDetector extends EventEmitter {
     this.emit('status-updated', updateEvent);
   }
 
-  private async handleCodexTurnStopped(
+  private async handleAgentTurnStopped(
     paneId: string,
     message: OutboundMessage
   ): Promise<void> {
-    const payload = (message.payload || {}) as CodexTurnStoppedPayload;
+    const payload = (message.payload || {}) as AgentTurnStoppedPayload;
     const captureSnapshot = payload.captureSnapshot || '';
 
     this.cancelLLMRequest(paneId, LLM_ABORT_REASON_SUPERSEDED);
@@ -182,7 +186,7 @@ export class StatusDetector extends EventEmitter {
       );
     } catch (error) {
       LogService.getInstance().debug(
-        `Codex hook summary extraction failed for pane ${paneId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Agent stop hook summary extraction failed for pane ${paneId}: ${error instanceof Error ? error.message : String(error)}`,
         'statusDetector',
         paneId
       );

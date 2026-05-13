@@ -225,6 +225,39 @@ describe('DmuxAttentionService', () => {
     service.stop();
   });
 
+  it('suppresses all attention surfaces when notifications are disabled', async () => {
+    const focusService = new MockFocusService();
+    focusService.getPaneAttentionSurface.mockResolvedValue('same-window');
+    const service = new DmuxAttentionService({
+      focusService: focusService as any,
+      notificationsEnabled: () => false,
+    });
+
+    service.start();
+
+    emitStatusUpdated({
+      paneId: 'pane-muted',
+      status: 'working',
+    });
+
+    emitAttentionNeeded({
+      paneId: 'pane-muted',
+      tmuxPaneId: '%31',
+      status: 'idle',
+      title: 'Muted',
+      body: 'This should not notify.',
+      fingerprint: 'idle:muted',
+    });
+    await flushAsyncWork();
+
+    expect(focusService.getPaneAttentionSurface).not.toHaveBeenCalled();
+    expect(focusService.flashPaneAttention).not.toHaveBeenCalled();
+    expect(focusService.sendAttentionNotification).not.toHaveBeenCalled();
+    expect(focusService.setPaneAttentionIndicator).not.toHaveBeenCalledWith('%31', true);
+
+    service.stop();
+  });
+
   it('clears pending attention when the user interacts with the pane', async () => {
     const focusService = new MockFocusService();
     const service = new DmuxAttentionService({ focusService: focusService as any });

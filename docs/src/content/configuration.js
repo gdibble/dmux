@@ -29,6 +29,24 @@ export function render() {
       </tbody>
     </table>
 
+    <h3><code>enableGoalModeByDefault</code></h3>
+    <table>
+      <tbody>
+        <tr><td><strong>Type</strong></td><td><code>boolean</code></td></tr>
+        <tr><td><strong>Default</strong></td><td><code>false</code></td></tr>
+        <tr><td><strong>Description</strong></td><td>Start new panes in goal mode when the selected agent supports it. The new-pane prompt popup also includes a per-pane goal-mode checkbox.</td></tr>
+      </tbody>
+    </table>
+
+    <h3><code>enableNotifications</code></h3>
+    <table>
+      <tbody>
+        <tr><td><strong>Type</strong></td><td><code>boolean</code></td></tr>
+        <tr><td><strong>Default</strong></td><td><code>true</code></td></tr>
+        <tr><td><strong>Description</strong></td><td>Allow dmux attention notifications, including native macOS alerts and same-window attention flashes. Disable this for a completely quiet attention-notification mode.</td></tr>
+      </tbody>
+    </table>
+
     <h3><code>permissionMode</code></h3>
     <table>
       <tbody>
@@ -61,7 +79,7 @@ export function render() {
       <tbody>
         <tr><td><strong>Type</strong></td><td><code>NotificationSoundId[]</code></td></tr>
         <tr><td><strong>Default</strong></td><td><code>['default-system-sound']</code></td></tr>
-        <tr><td><strong>Description</strong></td><td>Select which macOS helper sounds dmux randomizes between for background attention notifications. If the list is empty or invalid, dmux falls back to the default system sound.</td></tr>
+        <tr><td><strong>Description</strong></td><td>Select which macOS notification sounds dmux randomizes between for background attention notifications. If the list is empty or invalid, dmux falls back to the default system sound.</td></tr>
       </tbody>
     </table>
 
@@ -128,6 +146,8 @@ export function render() {
     <p>You can edit the JSON files directly:</p>
     <pre><code data-lang="json">{
   "enableAutopilotByDefault": true,
+  "enableGoalModeByDefault": false,
+  "enableNotifications": true,
   "permissionMode": "bypassPermissions",
   "defaultAgent": "claude",
   "enabledAgents": ["claude", "codex", "gemini"],
@@ -145,7 +165,8 @@ export function render() {
     <p>On macOS, dmux ships with a native helper that can send attention notifications for background panes. This is progressive enhancement only: dmux continues working on Linux and Windows without it.</p>
     <ul>
       <li>Notifications are only sent for panes that are not currently fully focused</li>
-      <li><code>enabledNotificationSounds</code> controls which helper sounds are eligible for random selection</li>
+      <li><code>enableNotifications</code> disables native alerts and same-window attention flashes when set to <code>false</code></li>
+      <li><code>enabledNotificationSounds</code> controls which sounds are eligible for random selection through macOS notification delivery</li>
       <li>The sidebar and pane borders still show attention state even when native notifications are unavailable</li>
     </ul>
 

@@ -16,6 +16,9 @@ import {
   getSendKeysPrePrompt,
   getSendKeysReadyDelayMs,
   getSendKeysSubmit,
+  buildGoalModePrompt,
+  shouldEnableCodexGoals,
+  supportsAgentGoalMode,
 } from '../src/utils/agentLaunch.js';
 
 describe('agent launch utils', () => {
@@ -33,6 +36,12 @@ describe('agent launch utils', () => {
 
   it('returns default-enabled registry agents', () => {
     expect(getDefaultEnabledAgents()).toEqual(['claude', 'opencode', 'codex']);
+  });
+
+  it('reports native goal-mode support for Claude and Codex only', () => {
+    expect(supportsAgentGoalMode('claude')).toBe(true);
+    expect(supportsAgentGoalMode('codex')).toBe(true);
+    expect(supportsAgentGoalMode('opencode')).toBe(false);
   });
 
   it('builds single-agent options from available agents', () => {
@@ -188,6 +197,16 @@ describe('command builders', () => {
     expect(buildResumeCommand('codex', 'bypassPermissions')).toBe(
       'codex resume --last --dangerously-bypass-approvals-and-sandbox'
     );
+  });
+
+  it('wraps supported initial prompts in /goal when goal mode is enabled', () => {
+    expect(buildGoalModePrompt('claude', 'fix the failing test', true)).toBe(
+      '/goal fix the failing test'
+    );
+    expect(buildGoalModePrompt('codex', 'ship it', true)).toBe('/goal ship it');
+    expect(buildGoalModePrompt('opencode', 'ship it', true)).toBe('ship it');
+    expect(shouldEnableCodexGoals('codex', true)).toBe(true);
+    expect(shouldEnableCodexGoals('claude', true)).toBe(false);
   });
 
   it('falls back to launch command when an agent has no resume template', () => {

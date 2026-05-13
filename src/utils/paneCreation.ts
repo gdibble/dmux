@@ -38,6 +38,7 @@ export interface CreatePaneOptions {
   slugBase?: string;
   baseBranchOverride?: string;
   branchNameOverride?: string;
+  goalMode?: boolean;
   existingWorktree?: {
     slug: string;
     worktreePath: string;
@@ -163,6 +164,7 @@ export async function createPane(
     slugBase,
     baseBranchOverride,
     branchNameOverride,
+    goalMode: goalModeOverride,
     existingWorktree,
     startPointBranch,
     mergeTargetChain,
@@ -207,6 +209,7 @@ export async function createPane(
 
   const settingsManager = new SettingsManager(projectRoot);
   const settings = settingsManager.getSettings();
+  const goalMode = goalModeOverride ?? settings.enableGoalModeByDefault ?? false;
   const existingWorktreeMetadata = existingWorktree
     ? readWorktreeMetadata(existingWorktree.worktreePath)
     : null;
@@ -473,6 +476,7 @@ export async function createPane(
     hidden: false,
     permissionMode: settings.permissionMode,
     autopilot: settings.enableAutopilotByDefault ?? false,
+    goalMode,
     mergeTargetChain,
   };
 
@@ -490,6 +494,7 @@ export async function createPane(
     prompt,
     agent,
     permissionMode: settings.permissionMode,
+    goalMode,
     pane: newPane,
     tmuxTitle,
     existingWorktree: !!existingWorktree,
@@ -498,6 +503,7 @@ export async function createPane(
     metadata: {
       agent,
       permissionMode: settings.permissionMode,
+      goalMode,
       displayName: existingWorktreeMetadata?.displayName,
       branchName: branchName !== slug ? branchName : undefined,
       mergeTargetChain,

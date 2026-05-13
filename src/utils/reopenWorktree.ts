@@ -14,6 +14,7 @@ import { buildWorktreePaneTitle } from './paneTitle.js';
 import {
   AGENT_IDS,
   buildAgentResumeOrLaunchCommand,
+  shouldEnableCodexGoals,
   type AgentName,
 } from './agentLaunch.js';
 import { ensureGeminiFolderTrusted } from './geminiTrust.js';
@@ -25,6 +26,7 @@ import {
   buildCodexHookedCommand,
   installCodexPaneHooks,
 } from './codexHooks.js';
+import { installClaudePaneHooks } from './claudeHooks.js';
 import { resolveProjectColorTheme } from './paneColors.js';
 import type { SidebarProject } from '../types.js';
 
@@ -176,6 +178,7 @@ export async function reopenWorktree(
       ? configuredAgent
       : preferredOrder.find((candidate) => candidateAgents.includes(candidate)));
   const permissionMode = metadata?.permissionMode ?? settings.permissionMode;
+  const goalMode = metadata?.goalMode ?? settings.enableGoalModeByDefault ?? false;
   const dmuxPaneId = `dmux-${Date.now()}`;
 
   // Resume the agent session (or start interactive mode when no resume command is available).
@@ -201,7 +204,21 @@ export async function reopenWorktree(
         dmuxPaneId,
         tmuxPaneId: paneInfo,
         eventFile: codexHookEventFile,
+      }, {
+        enableGoals: shouldEnableCodexGoals(agent, goalMode),
       });
+    }
+
+    if (agent === 'claude') {
+      try {
+        installClaudePaneHooks({
+          worktreePath,
+          dmuxPaneId,
+          tmuxPaneId: paneInfo,
+        });
+      } catch {
+        // Hook installation is best effort; Claude can still resume normally.
+      }
     }
 
     await tmuxService.sendShellCommand(paneInfo, resumeCommand);
@@ -230,6 +247,7 @@ export async function reopenWorktree(
     agent,
     permissionMode,
     autopilot: settings.enableAutopilotByDefault ?? false,
+    goalMode,
     mergeTargetChain: metadata?.mergeTargetChain,
   };
 

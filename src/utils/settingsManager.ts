@@ -77,6 +77,14 @@ function sanitizeLoadedSettings(value: unknown): DmuxSettings {
     sanitized.enableAutopilotByDefault = parsed.enableAutopilotByDefault;
   }
 
+  if (typeof parsed.enableGoalModeByDefault === 'boolean') {
+    sanitized.enableGoalModeByDefault = parsed.enableGoalModeByDefault;
+  }
+
+  if (typeof parsed.enableNotifications === 'boolean') {
+    sanitized.enableNotifications = parsed.enableNotifications;
+  }
+
   if (typeof parsed.promptForGitOptionsOnCreate === 'boolean') {
     sanitized.promptForGitOptionsOnCreate = parsed.promptForGitOptionsOnCreate;
   }
@@ -157,6 +165,8 @@ const DEFAULT_SETTINGS: DmuxSettings = {
   // Most permissive defaults for new dmux setups.
   permissionMode: 'bypassPermissions',
   enableAutopilotByDefault: true,
+  enableGoalModeByDefault: false,
+  enableNotifications: true,
   promptForGitOptionsOnCreate: false,
   minPaneWidth: DEFAULT_MIN_PANE_WIDTH,
   maxPaneWidth: DEFAULT_MAX_PANE_WIDTH,
@@ -201,6 +211,14 @@ const LOCALIZED_SETTING_TRANSLATIONS: Partial<
   enableAutopilotByDefault: {
     label: 'settings.enableAutopilot',
     description: 'settings.enableAutopilotDescription',
+  },
+  enableGoalModeByDefault: {
+    label: 'settings.enableGoalMode',
+    description: 'settings.enableGoalModeDescription',
+  },
+  enableNotifications: {
+    label: 'settings.enableNotifications',
+    description: 'settings.enableNotificationsDescription',
   },
   defaultAgent: {
     label: 'settings.defaultAgent',
@@ -285,6 +303,18 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
     key: 'enableAutopilotByDefault',
     label: 'Enable Autopilot by Default',
     description: 'Automatically accept options when no risk is detected for new panes',
+    type: 'boolean',
+  },
+  {
+    key: 'enableGoalModeByDefault',
+    label: 'Enable Goal Mode by Default',
+    description: 'Start new panes in agent goal mode when the selected agent supports it',
+    type: 'boolean',
+  },
+  {
+    key: 'enableNotifications',
+    label: 'Enable Notifications',
+    description: 'Allow dmux to show native attention notifications and same-window attention flashes',
     type: 'boolean',
   },
   {
@@ -444,6 +474,10 @@ export class SettingsManager {
     this.teamDefaults = this.loadSettingsFile(this.teamDefaultsPath, 'team defaults');
     this.globalSettings = this.loadSettingsFile(this.globalPath, 'global settings');
     this.projectSettings = this.loadSettingsFile(this.projectPath, 'project settings');
+  }
+
+  reloadSettings(): void {
+    this.loadSettings();
   }
 
   private getValidGlobalMinPaneWidth(): number {

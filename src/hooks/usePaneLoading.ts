@@ -9,12 +9,16 @@ import { PaneLifecycleManager } from '../services/PaneLifecycleManager.js';
 import { TMUX_COMMAND_TIMEOUT, TMUX_RETRY_DELAY } from '../constants/timing.js';
 import { atomicWriteJson } from '../utils/atomicWrite.js';
 import { syncPaneColorThemes } from '../utils/paneColors.js';
-import { buildAgentResumeOrLaunchCommand } from '../utils/agentLaunch.js';
+import {
+  buildAgentResumeOrLaunchCommand,
+  shouldEnableCodexGoals,
+} from '../utils/agentLaunch.js';
 import { ensureGeminiFolderTrusted } from '../utils/geminiTrust.js';
 import {
   buildCodexHookedCommand,
   installCodexPaneHooks,
 } from '../utils/codexHooks.js';
+import { installClaudePaneHooks } from '../utils/claudeHooks.js';
 import { getPaneTmuxTitle } from '../utils/paneTitle.js';
 import {
   getVisiblePanes,
@@ -72,7 +76,21 @@ async function restoreAgentSessionForPane(
       dmuxPaneId: pane.id,
       tmuxPaneId: paneId,
       eventFile: codexHookEventFile,
+    }, {
+      enableGoals: shouldEnableCodexGoals(pane.agent, pane.goalMode),
     });
+  }
+
+  if (pane.agent === 'claude' && pane.worktreePath) {
+    try {
+      installClaudePaneHooks({
+        worktreePath: pane.worktreePath,
+        dmuxPaneId: pane.id,
+        tmuxPaneId: paneId,
+      });
+    } catch {
+      // Hook installation is best effort; Claude can still resume normally.
+    }
   }
 
   await tmuxService.sendShellCommand(paneId, command);

@@ -218,7 +218,11 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const [useHooks, setUseHooks] = useState<boolean | undefined>(undefined)
   const [focusService] = useState(() => new DmuxFocusService({ projectName, projectRoot }))
   const [attentionService] = useState(
-    () => new DmuxAttentionService({ focusService })
+    () => new DmuxAttentionService({
+      focusService,
+      notificationsEnabled: () =>
+        new SettingsManager(projectRoot).getSettings().enableNotifications !== false,
+    })
   )
 
   useEffect(() => {

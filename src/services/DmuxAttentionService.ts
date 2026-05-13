@@ -25,6 +25,7 @@ interface AttentionCandidate {
 
 interface DmuxAttentionServiceOptions {
   focusService: DmuxFocusService;
+  notificationsEnabled?: () => boolean;
 }
 
 export interface PaneAttentionChangedEvent {
@@ -102,6 +103,11 @@ export class DmuxAttentionService extends EventEmitter {
   };
 
   private readonly handleAttentionNeeded = (event: AttentionNeededEvent): void => {
+    if (!this.areNotificationsEnabled()) {
+      this.resetPaneAttention(event.paneId);
+      return;
+    }
+
     this.candidates.set(event.paneId, {
       paneId: event.paneId,
       tmuxPaneId: event.tmuxPaneId,
@@ -116,6 +122,13 @@ export class DmuxAttentionService extends EventEmitter {
   };
 
   private readonly handleFocusChanged = (_event: DmuxFocusChangedEvent): void => {
+    if (!this.areNotificationsEnabled()) {
+      for (const paneId of this.candidates.keys()) {
+        this.resetPaneAttention(paneId);
+      }
+      return;
+    }
+
     for (const paneId of this.candidates.keys()) {
       void this.maybeNotify(paneId);
     }
@@ -123,6 +136,11 @@ export class DmuxAttentionService extends EventEmitter {
 
   private async maybeNotify(paneId: string): Promise<void> {
     if (!this.active) {
+      return;
+    }
+
+    if (!this.areNotificationsEnabled()) {
+      this.resetPaneAttention(paneId);
       return;
     }
 
@@ -249,5 +267,9 @@ export class DmuxAttentionService extends EventEmitter {
       tmuxPaneId: currentTmuxPaneId,
       needsAttention: false,
     } satisfies PaneAttentionChangedEvent);
+  }
+
+  private areNotificationsEnabled(): boolean {
+    return this.options.notificationsEnabled?.() ?? true;
   }
 }

@@ -14,12 +14,14 @@ import type { PaneBootstrapConfig } from './paneBootstrapConfig.js';
 import {
   buildAgentCommand,
   buildInitialPromptCommand,
+  buildGoalModePrompt,
   getAgentLabel,
   getSendKeysPostPasteDelayMs,
   getSendKeysPrePrompt,
   getSendKeysReadyDelayMs,
   getSendKeysSubmit,
   getPromptTransport,
+  shouldEnableCodexGoals,
 } from './agentLaunch.js';
 import {
   buildPromptReadAndDeleteSnippet,
@@ -32,6 +34,7 @@ import {
   buildCodexHookedCommand,
   installCodexPaneHooks,
 } from './codexHooks.js';
+import { installClaudePaneHooks } from './claudeHooks.js';
 import { TmuxService } from '../services/TmuxService.js';
 import { getPaneTmuxTitle } from './paneTitle.js';
 
@@ -522,7 +525,10 @@ async function sendInteractivePrompt(config: PaneBootstrapConfig): Promise<void>
       await sleep(120);
     }
 
-    await tmuxService.setBuffer(bufferName, config.prompt);
+    await tmuxService.setBuffer(
+      bufferName,
+      buildGoalModePrompt(config.agent, config.prompt, config.goalMode)
+    );
     await tmuxService.pasteBuffer(bufferName, config.pane.paneId);
 
     const postPasteDelayMs = getSendKeysPostPasteDelayMs(config.agent);
@@ -550,12 +556,13 @@ async function buildLaunchCommand(config: PaneBootstrapConfig): Promise<string |
 
   const hasInitialPrompt = !!config.prompt.trim();
   const promptTransport = getPromptTransport(config.agent);
+  const launchPrompt = buildGoalModePrompt(config.agent, config.prompt, config.goalMode);
   let launchCommand: string;
 
   if (hasInitialPrompt && promptTransport !== 'send-keys') {
     let promptFilePath: string | null = null;
     try {
-      promptFilePath = await writePromptFile(config.projectRoot, config.slug, config.prompt);
+      promptFilePath = await writePromptFile(config.projectRoot, config.slug, launchPrompt);
     } catch {
       promptFilePath = null;
     }
@@ -568,7 +575,7 @@ async function buildLaunchCommand(config: PaneBootstrapConfig): Promise<string |
         config.permissionMode
       )}`;
     } else {
-      const escapedPrompt = config.prompt
+      const escapedPrompt = launchPrompt
         .replace(/\\/g, '\\\\')
         .replace(/"/g, '\\"')
         .replace(/`/g, '\\`')
@@ -581,6 +588,18 @@ async function buildLaunchCommand(config: PaneBootstrapConfig): Promise<string |
     }
   } else {
     launchCommand = buildAgentCommand(config.agent, config.permissionMode);
+  }
+
+  if (config.agent === 'claude') {
+    try {
+      installClaudePaneHooks({
+        worktreePath: config.worktreePath,
+        dmuxPaneId: config.pane.id,
+        tmuxPaneId: config.pane.paneId,
+      });
+    } catch {
+      // Hook installation is best effort; Claude can still run normally.
+    }
   }
 
   if (config.agent === 'codex') {
@@ -599,6 +618,8 @@ async function buildLaunchCommand(config: PaneBootstrapConfig): Promise<string |
       dmuxPaneId: config.pane.id,
       tmuxPaneId: config.pane.paneId,
       eventFile: codexHookEventFile,
+    }, {
+      enableGoals: shouldEnableCodexGoals(config.agent, config.goalMode),
     });
   }
 

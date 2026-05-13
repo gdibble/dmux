@@ -26,6 +26,7 @@ describe('worktree metadata persistence', () => {
     writeWorktreeMetadata(tempDir, {
       agent: 'codex',
       permissionMode: 'bypassPermissions',
+      goalMode: true,
       displayName: 'Review Queue',
       branchName: 'feat/child-worktree',
       mergeTargetChain: [
@@ -46,6 +47,7 @@ describe('worktree metadata persistence', () => {
     expect(readWorktreeMetadata(tempDir)).toEqual({
       agent: 'codex',
       permissionMode: 'bypassPermissions',
+      goalMode: true,
       displayName: 'Review Queue',
       branchName: 'feat/child-worktree',
       mergeTargetChain: [

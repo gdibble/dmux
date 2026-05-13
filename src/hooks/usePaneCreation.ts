@@ -24,6 +24,7 @@ interface CreateNewPaneOptions {
   slugBase?: string;
   baseBranchOverride?: string;
   branchNameOverride?: string;
+  goalMode?: boolean;
   targetProjectRoot?: string;
   skipAgentSelection?: boolean;
   startPointBranch?: string;
@@ -104,6 +105,7 @@ export default function usePaneCreation({
         slugBase: options.slugBase,
         baseBranchOverride: options.baseBranchOverride,
         branchNameOverride: options.branchNameOverride,
+        goalMode: options.goalMode,
         projectRoot: options.targetProjectRoot,
         skipAgentSelection: options.skipAgentSelection,
         startPointBranch: options.startPointBranch,
@@ -132,6 +134,7 @@ export default function usePaneCreation({
       ...options,
       baseBranchOverride: options.baseBranchOverride ?? paneInput.baseBranch,
       branchNameOverride: options.branchNameOverride ?? paneInput.branchName,
+      goalMode: options.goalMode ?? paneInput.goalMode,
     };
 
     try {
@@ -200,6 +203,7 @@ export default function usePaneCreation({
         slugBase,
         baseBranchOverride: paneInput.baseBranch,
         branchNameOverride: paneInput.branchName,
+        goalMode: paneInput.goalMode,
         targetProjectRoot: options.targetProjectRoot,
         startPointBranch: options.startPointBranch,
         mergeTargetChain: options.mergeTargetChain,
@@ -228,6 +232,7 @@ export default function usePaneCreation({
               slugBase,
               baseBranchOverride: paneInput.baseBranch,
               branchNameOverride: paneInput.branchName,
+              goalMode: paneInput.goalMode,
               targetProjectRoot: options.targetProjectRoot,
               startPointBranch: options.startPointBranch,
               mergeTargetChain: options.mergeTargetChain,

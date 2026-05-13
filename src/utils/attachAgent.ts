@@ -19,12 +19,14 @@ import { buildWorktreePaneTitle } from './paneTitle.js';
 import { SettingsManager } from './settingsManager.js';
 import { LogService } from '../services/LogService.js';
 import { installCodexPaneHooks } from './codexHooks.js';
+import { installClaudePaneHooks } from './claudeHooks.js';
 import { resolveProjectColorTheme } from './paneColors.js';
 
 export interface AttachAgentOptions {
   targetPane: DmuxPane;
   prompt: string;
   agent: AgentName;
+  goalMode?: boolean;
   existingPanes: DmuxPane[];
   sessionProjectRoot: string;
   sessionConfigPath: string;
@@ -64,6 +66,7 @@ export async function attachAgentToWorktree(
     targetPane,
     prompt,
     agent,
+    goalMode: goalModeOverride,
     existingPanes,
     sessionProjectRoot,
     sessionConfigPath,
@@ -138,6 +141,7 @@ export async function attachAgentToWorktree(
   await new Promise(r => setTimeout(r, 300));
 
   const dmuxPaneId = `dmux-${Date.now()}`;
+  const goalMode = goalModeOverride ?? settings.enableGoalModeByDefault ?? false;
   let codexHookEventFile: string | undefined;
   if (agent === 'codex') {
     try {
@@ -154,6 +158,21 @@ export async function attachAgentToWorktree(
       );
     }
   }
+  if (agent === 'claude') {
+    try {
+      installClaudePaneHooks({
+        worktreePath: targetPane.worktreePath,
+        dmuxPaneId,
+        tmuxPaneId: paneInfo,
+      });
+    } catch (error) {
+      LogService.getInstance().warn(
+        `Failed to install Claude hooks for ${slug}: ${error instanceof Error ? error.message : String(error)}`,
+        'attachAgent',
+        dmuxPaneId
+      );
+    }
+  }
 
   // Launch the agent
   await launchAgentInPane({
@@ -162,6 +181,7 @@ export async function attachAgentToWorktree(
     prompt,
     slug,
     projectRoot,
+    goalMode,
     dmuxPaneId,
     codexHookEventFile,
     permissionMode: settings.permissionMode,
@@ -191,6 +211,7 @@ export async function attachAgentToWorktree(
     agent,
     permissionMode: settings.permissionMode,
     autopilot: settings.enableAutopilotByDefault ?? false,
+    goalMode,
   };
 
   // Switch focus back to control pane

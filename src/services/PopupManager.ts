@@ -175,6 +175,9 @@ export class PopupManager {
   private getSettingsManager(projectRoot?: string) {
     const resolvedProjectRoot = projectRoot || this.config.projectRoot
     if (!projectRoot || resolvedProjectRoot === this.config.projectRoot) {
+      if (typeof this.config.settingsManager?.reloadSettings === "function") {
+        this.config.settingsManager.reloadSettings()
+      }
       return this.config.settingsManager
     }
 
@@ -348,6 +351,9 @@ export class PopupManager {
       const value = candidate.branchName.trim()
       if (value) normalized.branchName = value
     }
+    if (typeof candidate.goalMode === "boolean") {
+      normalized.goalMode = candidate.goalMode
+    }
 
     return normalized
   }
@@ -364,7 +370,11 @@ export class PopupManager {
       const settings = this.getSettingsManager(effectivePath).getSettings()
       const shouldPromptForGitOptions =
         (settings.promptForGitOptionsOnCreate ?? false) && (options.allowGitOptions ?? true)
-      const popupArgs = [effectivePath, shouldPromptForGitOptions ? "1" : "0"]
+      const popupArgs = [
+        effectivePath,
+        shouldPromptForGitOptions ? "1" : "0",
+        settings.enableGoalModeByDefault ? "1" : "0",
+      ]
       const projectName = effectivePath ? path.basename(effectivePath) : "dmux"
       const result = await this.launchPopup<unknown>(
         "newPanePopup.js",

@@ -49,6 +49,10 @@ export function render() {
     <p>When <code>enableAutopilotByDefault</code> is enabled in <a href="#/configuration">settings</a>, dmux will automatically accept agent option dialogs when no risk is detected. This reduces manual intervention while agents work.</p>
     <p>This setting controls dialog handling and is separate from <code>permissionMode</code>.</p>
 
+    <h2>Goal Mode</h2>
+    <p>When <code>enableGoalModeByDefault</code> is enabled, new panes start supported agents with a <code>/goal</code> command built from the initial prompt. The new-pane prompt popup also includes a per-pane checkbox so you can turn goal mode on or off for that launch.</p>
+    <p>dmux currently enables native goal launch behavior for Claude Code and Codex. Codex launches with the experimental <code>--enable goals</code> flag when goal mode is selected. Other agents receive the normal initial prompt unless they add compatible goal-mode support later.</p>
+
     <div class="callout callout-warning">
       <div class="callout-title">Caution</div>
       With the default <code>permissionMode</code> (<code>bypassPermissions</code>), Claude and Codex run with full-permission flags. Combined with autopilot, this provides highly autonomous behavior. Use only in isolated/trusted environments.

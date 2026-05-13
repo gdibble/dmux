@@ -16,7 +16,7 @@ export interface InboundMessage extends WorkerMessage {
 
 // Messages sent from worker to main thread
 export interface OutboundMessage extends WorkerMessage {
-  type: 'ready' | 'status-change' | 'capture-result' | 'analysis-needed' | 'codex-turn-stopped' | 'error' | 'shutdown-complete' | 'pane-removed' | 'user-interaction';
+  type: 'ready' | 'status-change' | 'capture-result' | 'analysis-needed' | 'agent-turn-stopped' | 'codex-turn-stopped' | 'error' | 'shutdown-complete' | 'pane-removed' | 'user-interaction';
   paneId: string;
 }
 
@@ -42,13 +42,17 @@ export interface AnalysisNeededPayload {
   reason: 'new-static-content' | 'revalidation';
 }
 
-export interface CodexTurnStoppedPayload {
+export interface AgentTurnStoppedPayload {
   captureSnapshot: string;
+  agent?: AgentName;
   turnId?: string;
   lastAssistantMessage?: string;
+  stopHookActive?: boolean;
   eventFile: string;
   source: string;
 }
+
+export type CodexTurnStoppedPayload = AgentTurnStoppedPayload;
 
 export interface UserInteractionPayload {
   captureSnapshot?: string;

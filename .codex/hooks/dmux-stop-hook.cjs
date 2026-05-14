@@ -18,8 +18,8 @@ process.stdin.on('end', () => {
     source: 'codex-stop-hook',
     dmuxPaneId: process.env.DMUX_PANE_ID || '',
     tmuxPaneId: process.env.DMUX_TMUX_PANE_ID || '',
-    expectedDmuxPaneId: 'dmux-1776789665089',
-    expectedTmuxPaneId: '%20',
+    expectedDmuxPaneId: 'dmux-1778678856262',
+    expectedTmuxPaneId: '%28',
     hookEventName: payload.hook_event_name || payload.hookEventName || '',
     turnId: payload.turn_id || payload.turnId || '',
     lastAssistantMessage: payload.last_assistant_message || null,
@@ -37,7 +37,7 @@ process.stdin.on('end', () => {
   }
 
   try {
-    fs.writeFileSync('/Users/justinschroeder/Projects/dmux/.dmux/worktrees/hidden-panes/.codex/dmux/dmux-1776789665089.json', JSON.stringify(event, null, 2));
+    fs.writeFileSync('/Users/justinschroeder/Projects/dmux/.dmux/worktrees/feat-5.8.0/.codex/dmux/dmux-1778678856262.json', JSON.stringify(event, null, 2));
   } catch (error) {
     process.exit(0);
   }

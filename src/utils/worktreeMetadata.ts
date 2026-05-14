@@ -12,6 +12,7 @@ import { sanitizePaneDisplayName } from './paneTitle.js';
 export interface WorktreeMetadata {
   agent?: AgentName;
   permissionMode?: PermissionMode;
+  goalMode?: boolean;
   displayName?: string;
   branchName?: string;
   mergeTargetChain?: MergeTargetReference[];
@@ -86,6 +87,10 @@ export function readWorktreeMetadata(worktreePath: string): WorktreeMetadata | n
       && PERMISSION_MODES.has(parsed.permissionMode as PermissionMode)
     ) {
       metadata.permissionMode = parsed.permissionMode as PermissionMode;
+    }
+
+    if (typeof parsed.goalMode === 'boolean') {
+      metadata.goalMode = parsed.goalMode;
     }
 
     if (typeof parsed.displayName === 'string') {

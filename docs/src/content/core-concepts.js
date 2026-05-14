@@ -50,6 +50,7 @@ export function render() {
     <p>When a pane settles into a state that needs you, dmux marks it with an attention indicator in the sidebar and pane border. On macOS, dmux can also send a native notification for panes that are not currently focused.</p>
     <ul>
       <li>The selected pane will not notify you while it is fully focused</li>
+      <li>Notifications can be disabled entirely with <code>enableNotifications</code></li>
       <li>Attention sounds are configurable from <a href="#/configuration">settings</a></li>
       <li>On non-macOS platforms, dmux still works normally without the native helper</li>
     </ul>

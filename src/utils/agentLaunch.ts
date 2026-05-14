@@ -6,6 +6,8 @@ import {
 } from './promptStore.js';
 import {
   buildCodexPaneEnvironmentPrefix,
+  CODEX_ENABLE_HOOKS_FLAG,
+  CODEX_ENABLE_GOALS_FLAG,
 } from './codexHooks.js';
 
 export const AGENT_IDS = [
@@ -408,6 +410,30 @@ export function getDefaultEnabledAgents(): AgentName[] {
   return AGENT_IDS.filter((agent) => AGENT_REGISTRY[agent].defaultEnabled);
 }
 
+export function supportsAgentGoalMode(agent: AgentName | undefined): boolean {
+  return agent === 'claude' || agent === 'codex';
+}
+
+export function buildGoalModePrompt(
+  agent: AgentName | undefined,
+  prompt: string,
+  goalMode: boolean | undefined
+): string {
+  const trimmedPrompt = prompt.trim();
+  if (!goalMode || !supportsAgentGoalMode(agent) || !trimmedPrompt) {
+    return prompt;
+  }
+
+  return `/goal ${trimmedPrompt}`;
+}
+
+export function shouldEnableCodexGoals(
+  agent: AgentName | undefined,
+  goalMode: boolean | undefined
+): boolean {
+  return agent === 'codex' && goalMode === true;
+}
+
 /**
  * Resolve enabled agent list from settings.
  * If the user has not configured enabledAgents, fall back to registry defaults.
@@ -544,13 +570,15 @@ export async function launchAgentInPane(opts: {
   prompt: string;
   slug: string;
   projectRoot: string;
+  goalMode?: boolean;
   dmuxPaneId?: string;
   codexHookEventFile?: string;
   permissionMode?: '' | 'plan' | 'acceptEdits' | 'bypassPermissions';
 }): Promise<void> {
   const { paneId, agent, prompt, slug, projectRoot, permissionMode } = opts;
   const tmuxService = TmuxService.getInstance();
-  const hasInitialPrompt = !!(prompt && prompt.trim());
+  const launchPrompt = buildGoalModePrompt(agent, prompt, opts.goalMode);
+  const hasInitialPrompt = !!(launchPrompt && launchPrompt.trim());
 
   if (agent === 'claude') {
     const permissionFlags = getPermissionFlags('claude', permissionMode);
@@ -559,7 +587,7 @@ export async function launchAgentInPane(opts: {
     if (hasInitialPrompt) {
       let promptFilePath: string | null = null;
       try {
-        promptFilePath = await writePromptFile(projectRoot, slug, prompt);
+        promptFilePath = await writePromptFile(projectRoot, slug, launchPrompt);
       } catch {
         // Fall back to inline escaping if prompt file write fails
       }
@@ -568,7 +596,7 @@ export async function launchAgentInPane(opts: {
         const promptBootstrap = buildPromptReadAndDeleteSnippet(promptFilePath);
         claudeCmd = `${promptBootstrap}; claude "$DMUX_PROMPT_CONTENT"${permissionSuffix}`;
       } else {
-        const escapedPrompt = prompt
+        const escapedPrompt = launchPrompt
           .replace(/\\/g, '\\\\')
           .replace(/"/g, '\\"')
           .replace(/`/g, '\\`')
@@ -588,23 +616,27 @@ export async function launchAgentInPane(opts: {
       tmuxPaneId: paneId,
       eventFile: opts.codexHookEventFile,
     });
+    const codexFeatureFlags = [
+      CODEX_ENABLE_HOOKS_FLAG,
+      ...(shouldEnableCodexGoals(agent, opts.goalMode) ? [CODEX_ENABLE_GOALS_FLAG] : []),
+    ].join(' ');
     let codexCmd: string;
     if (hasInitialPrompt) {
       let promptFilePath: string | null = null;
       try {
-        promptFilePath = await writePromptFile(projectRoot, slug, prompt);
+        promptFilePath = await writePromptFile(projectRoot, slug, launchPrompt);
       } catch {
         // Fall back to inline escaping if prompt file write fails
       }
 
       if (promptFilePath) {
         const promptBootstrap = buildPromptReadAndDeleteSnippet(promptFilePath);
-        codexCmd = `${promptBootstrap}; ${codexEnvPrefix} codex --enable codex_hooks "$DMUX_PROMPT_CONTENT"${permissionSuffix}`;
+        codexCmd = `${promptBootstrap}; ${codexEnvPrefix} codex ${codexFeatureFlags} "$DMUX_PROMPT_CONTENT"${permissionSuffix}`;
       } else {
-        codexCmd = `${codexEnvPrefix} codex --enable codex_hooks ${shellQuote(prompt)}${permissionSuffix}`;
+        codexCmd = `${codexEnvPrefix} codex ${codexFeatureFlags} ${shellQuote(launchPrompt)}${permissionSuffix}`;
       }
     } else {
-      codexCmd = `${codexEnvPrefix} codex --enable codex_hooks${permissionSuffix}`;
+      codexCmd = `${codexEnvPrefix} codex ${codexFeatureFlags}${permissionSuffix}`;
     }
     await tmuxService.sendShellCommand(paneId, codexCmd);
     await tmuxService.sendTmuxKeys(paneId, 'Enter');
@@ -613,7 +645,7 @@ export async function launchAgentInPane(opts: {
     if (hasInitialPrompt) {
       let promptFilePath: string | null = null;
       try {
-        promptFilePath = await writePromptFile(projectRoot, slug, prompt);
+        promptFilePath = await writePromptFile(projectRoot, slug, launchPrompt);
       } catch {
         // Fall back to inline escaping if prompt file write fails
       }
@@ -622,7 +654,7 @@ export async function launchAgentInPane(opts: {
         const promptBootstrap = buildPromptReadAndDeleteSnippet(promptFilePath);
         opencodeCmd = `${promptBootstrap}; opencode --prompt "$DMUX_PROMPT_CONTENT"`;
       } else {
-        const escapedPrompt = prompt
+        const escapedPrompt = launchPrompt
           .replace(/\\/g, '\\\\')
           .replace(/"/g, '\\"')
           .replace(/`/g, '\\`')

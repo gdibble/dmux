@@ -944,6 +944,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
               targetPane: selectedPane,
               prompt: promptInput.prompt,
               agent,
+              goalMode: promptInput.goalMode,
               existingPanes: [...panes, ...createdPanes],
               sessionProjectRoot: projectRoot,
             sessionConfigPath: panesFile,

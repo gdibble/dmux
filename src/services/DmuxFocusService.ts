@@ -696,6 +696,11 @@ export class DmuxFocusService extends EventEmitter {
     return selectedSound.resourceFileName;
   }
 
+  private areNotificationsEnabled(): boolean {
+    const settingsManager = new SettingsManager(this.options.projectRoot ?? process.cwd());
+    return settingsManager.getSettings().enableNotifications !== false;
+  }
+
   async start(): Promise<void> {
     if (!supportsNativeDmuxHelper() || !process.env.TMUX || isTestEnvironment()) {
       return;
@@ -909,6 +914,10 @@ export class DmuxFocusService extends EventEmitter {
     request: DmuxAttentionNotificationRequest
   ): Promise<boolean> {
     if (!supportsNativeDmuxHelper() || isTestEnvironment()) {
+      return false;
+    }
+
+    if (!this.areNotificationsEnabled()) {
       return false;
     }
 

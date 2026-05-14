@@ -40,6 +40,7 @@ describe('NewPanePopupApp', () => {
     );
 
     await sleep(60);
+    expect(stripAnsi(lastFrame() ?? '')).toContain('[ ] Goal mode');
     await type(stdin, 'ship it');
     expect(stripAnsi(lastFrame() ?? '')).toContain('> ship it');
 

@@ -7,6 +7,7 @@ import { TmuxService } from '../services/TmuxService.js';
 import type { AgentName } from '../utils/agentLaunch.js';
 import {
   buildPaneActivityFingerprint,
+  getAgentHookStatus,
   hasAgentWorkingIndicators,
   isLikelyUserTyping,
 } from '../utils/paneAttentionHeuristics.js';
@@ -16,7 +17,7 @@ import type {
   OutboundMessage,
   StatusChangePayload,
   AnalysisNeededPayload,
-  CodexTurnStoppedPayload,
+  AgentTurnStoppedPayload,
   ErrorPayload,
   UserInteractionPayload,
 } from './WorkerMessages.js';
@@ -43,9 +44,9 @@ class PaneWorker {
   private lastAgentActivityAt: number = 0;
   private awaitingAgentAfterUserInteraction: boolean = false;
   private statusBeforeAnalyzing: 'idle' | 'waiting' | 'working' = 'idle';
-  private codexEventFile?: string;
-  private lastCodexEventTimestamp = 0;
-  private lastCodexEventTurnId = '';
+  private agentStopEventFile?: string;
+  private lastAgentStopEventTimestamp = 0;
+  private lastAgentStopEventId = '';
   private tmux = TmuxService.getInstance();
 
   constructor(config: WorkerConfig) {
@@ -54,7 +55,7 @@ class PaneWorker {
     this.agent = config.agent;
     this.worktreePath = config.worktreePath;
     this.pollIntervalMs = config.pollInterval || 1000;
-    this.codexEventFile = this.resolveCodexEventFile();
+    this.agentStopEventFile = this.resolveAgentStopEventFile();
 
     this.setupMessageHandler();
     this.startPolling();
@@ -119,7 +120,7 @@ class PaneWorker {
       const activityFingerprint = buildPaneActivityFingerprint(output);
       const now = Date.now();
 
-      if (this.maybeHandleCodexTurnStopped(output, activityFingerprint)) {
+      if (this.maybeHandleAgentTurnStopped(output, activityFingerprint)) {
         return;
       }
 
@@ -275,22 +276,30 @@ class PaneWorker {
     this.requestAnalysis(content, reason);
   }
 
-  private resolveCodexEventFile(): string | undefined {
-    if (this.agent !== 'codex' || !this.worktreePath) {
+  private resolveAgentStopEventFile(): string | undefined {
+    if (!this.worktreePath) {
       return undefined;
     }
 
-    return path.join(this.worktreePath, '.codex', 'dmux', `${this.paneId}.json`);
+    if (this.agent === 'codex') {
+      return path.join(this.worktreePath, '.codex', 'dmux', `${this.paneId}.json`);
+    }
+
+    if (this.agent === 'claude') {
+      return path.join(this.worktreePath, '.claude', 'dmux', `${this.paneId}.json`);
+    }
+
+    return undefined;
   }
 
-  private maybeHandleCodexTurnStopped(output: string, fingerprint: string): boolean {
-    if (!this.codexEventFile) {
+  private maybeHandleAgentTurnStopped(output: string, fingerprint: string): boolean {
+    if (!this.agentStopEventFile) {
       return false;
     }
 
     let raw: string;
     try {
-      raw = fs.readFileSync(this.codexEventFile, 'utf-8');
+      raw = fs.readFileSync(this.agentStopEventFile, 'utf-8');
     } catch {
       return false;
     }
@@ -304,11 +313,13 @@ class PaneWorker {
 
     const timestamp = Number(event.timestamp || 0);
     const turnId = typeof event.turnId === 'string' ? event.turnId : '';
-    if (!timestamp || timestamp < this.lastCodexEventTimestamp) {
+    const sessionId = typeof event.sessionId === 'string' ? event.sessionId : '';
+    const eventId = turnId || (sessionId ? `${sessionId}:${timestamp}` : '');
+    if (!timestamp || timestamp < this.lastAgentStopEventTimestamp) {
       return false;
     }
 
-    if (timestamp === this.lastCodexEventTimestamp && turnId === this.lastCodexEventTurnId) {
+    if (timestamp === this.lastAgentStopEventTimestamp && eventId === this.lastAgentStopEventId) {
       return false;
     }
 
@@ -320,26 +331,43 @@ class PaneWorker {
       return false;
     }
 
-    this.lastCodexEventTimestamp = timestamp;
-    this.lastCodexEventTurnId = turnId;
+    this.lastAgentStopEventTimestamp = timestamp;
+    this.lastAgentStopEventId = eventId;
+
+    const eventStatus = getAgentHookStatus(event);
+    if (!eventStatus) {
+      return false;
+    }
+
+    if (eventStatus === 'working' || this.isGoalContinuationEvent(event, output)) {
+      this.markAgentActive(output, fingerprint, Date.now());
+      return true;
+    }
+
     this.awaitingAgentAfterUserInteraction = false;
-    this.settledStateConfirmed = true;
+    this.settledStateConfirmed = eventStatus === 'idle' || eventStatus === 'waiting';
     this.lastStaticContent = output;
     this.lastStaticFingerprint = fingerprint;
     this.captureHistory = [{ raw: output, fingerprint }];
 
     const previousStatus = this.currentStatus;
-    this.currentStatus = 'idle';
+    this.currentStatus = eventStatus;
     this.emit('status-change', {
-      status: 'idle',
+      status: eventStatus,
       previousStatus,
       captureSnapshot: output,
     });
 
-    const payload: CodexTurnStoppedPayload = {
+    if (eventStatus !== 'idle') {
+      return true;
+    }
+
+    const payload: AgentTurnStoppedPayload = {
       captureSnapshot: output,
-      eventFile: this.codexEventFile,
-      source: typeof event.source === 'string' ? event.source : 'codex-hook',
+      agent: this.agent,
+      eventFile: this.agentStopEventFile,
+      source: typeof event.source === 'string' ? event.source : 'agent-stop-hook',
+      stopHookActive: false,
     };
 
     if (turnId) {
@@ -349,8 +377,26 @@ class PaneWorker {
       payload.lastAssistantMessage = event.lastAssistantMessage;
     }
 
-    this.emit('codex-turn-stopped', payload);
+    this.emit('agent-turn-stopped', payload);
     return true;
+  }
+
+  private isGoalContinuationEvent(event: any, output: string): boolean {
+    if (event.stopHookActive === true || event.stop_hook_active === true) {
+      return true;
+    }
+
+    if (this.agent !== 'claude' && this.agent !== 'codex') {
+      return false;
+    }
+
+    const recentOutput = output.split('\n').slice(-20).join('\n');
+    return (
+      /\/goal\s+active/i.test(recentOutput)
+      || /\bgoal\s+active\b/i.test(recentOutput)
+      || /\bactive\s+goal\b/i.test(recentOutput)
+      || /\bgoal\s+is\s+active\b/i.test(recentOutput)
+    );
   }
 
   private handleAnalysisComplete(payload: any): void {

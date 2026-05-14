@@ -12,6 +12,7 @@ export interface PaneBootstrapConfig {
   prompt: string;
   agent?: AgentName;
   permissionMode?: PermissionMode;
+  goalMode?: boolean;
   pane: DmuxPane;
   tmuxTitle: string;
   existingWorktree: boolean;
@@ -20,6 +21,7 @@ export interface PaneBootstrapConfig {
   metadata: {
     agent?: AgentName;
     permissionMode?: PermissionMode;
+    goalMode?: boolean;
     displayName?: string;
     branchName?: string;
     mergeTargetChain?: DmuxPane['mergeTargetChain'];

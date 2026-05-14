@@ -144,6 +144,13 @@ describe('Pane Lifecycle Integration Tests', () => {
         return Buffer.from(value);
       };
 
+      if (cmd.includes('claude --no-interactive') && cmd.includes('Generate a 1-2 word kebab-case slug')) {
+        if (cmd.includes('add user dashboard')) {
+          return returnValue('add-user');
+        }
+        return returnValue('');
+      }
+
       // Tmux display-message (get current pane id or session name)
       if (cmd.includes('display-message')) {
         if (cmd.includes('#{session_name}')) {

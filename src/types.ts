@@ -75,6 +75,8 @@ export interface DmuxPane {
   agentSummary?: string;
   // Autopilot mode - automatically accept options when no risk detected
   autopilot?: boolean;
+  // Goal mode - launch supported agents with a session goal command
+  goalMode?: boolean;
   // Error message if pane analyzer encounters issues
   analyzerError?: string;
   // Merge ancestry for sub-worktrees; first entry is the immediate parent target.
@@ -110,6 +112,10 @@ export interface DmuxSettings {
   permissionMode?: '' | 'plan' | 'acceptEdits' | 'bypassPermissions';
   // Autopilot settings
   enableAutopilotByDefault?: boolean;
+  // Goal mode settings
+  enableGoalModeByDefault?: boolean;
+  // Native attention notifications and same-window attention flashes
+  enableNotifications?: boolean;
   // Agent selection
   defaultAgent?: AgentName | '';
   // Which agents appear in new-pane selection
@@ -142,6 +148,7 @@ export interface NewPaneInput {
   prompt: string;
   baseBranch?: string;
   branchName?: string;
+  goalMode?: boolean;
 }
 
 export type SettingsScope = 'global' | 'project';

@@ -23,6 +23,8 @@ describe('SettingsManager defaults', () => {
     expect(manager.getSettings()).toMatchObject({
       permissionMode: 'bypassPermissions',
       enableAutopilotByDefault: true,
+      enableGoalModeByDefault: false,
+      enableNotifications: true,
       promptForGitOptionsOnCreate: false,
       minPaneWidth: 50,
       maxPaneWidth: 80,
@@ -149,6 +151,28 @@ describe('SettingsManager defaults', () => {
 
     manager.updateSetting('showFooterTips', false, 'project');
     expect(manager.getSettings().showFooterTips).toBe(false);
+  });
+
+  it('allows overriding notification and goal-mode defaults', async () => {
+    vi.mock('fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('fs')>();
+      return {
+        ...actual,
+        existsSync: vi.fn(() => false),
+        readFileSync: vi.fn(),
+        writeFileSync: vi.fn(),
+        mkdirSync: vi.fn(),
+      };
+    });
+
+    const { SettingsManager } = await import('../src/utils/settingsManager.js');
+    const manager = new SettingsManager('/tmp/test-project');
+
+    manager.updateSetting('enableNotifications', false, 'project');
+    manager.updateSetting('enableGoalModeByDefault', true, 'project');
+
+    expect(manager.getSettings().enableNotifications).toBe(false);
+    expect(manager.getSettings().enableGoalModeByDefault).toBe(true);
   });
 
   it('allows overriding colorTheme with a valid theme name', async () => {
@@ -485,6 +509,8 @@ describe('SettingsManager defaults', () => {
         readFileSync: vi.fn(() => JSON.stringify({
           permissionMode: 'fullAuto',
           enableAutopilotByDefault: true,
+          enableGoalModeByDefault: true,
+          enableNotifications: false,
           defaultAgent: 'not-an-agent',
           enabledAgents: ['codex', 'not-an-agent', 123],
           enabledNotificationSounds: ['harp', 'not-a-sound'],
@@ -504,6 +530,8 @@ describe('SettingsManager defaults', () => {
 
     expect(manager.getTeamDefaults()).toEqual({
       enableAutopilotByDefault: true,
+      enableGoalModeByDefault: true,
+      enableNotifications: false,
       enabledAgents: ['codex'],
       enabledNotificationSounds: ['harp'],
       branchPrefix: 'fix/',
@@ -511,6 +539,8 @@ describe('SettingsManager defaults', () => {
     expect(manager.getSettings()).toMatchObject({
       permissionMode: 'bypassPermissions',
       enableAutopilotByDefault: true,
+      enableGoalModeByDefault: true,
+      enableNotifications: false,
       enabledAgents: ['codex'],
       enabledNotificationSounds: ['harp'],
       showFooterTips: true,

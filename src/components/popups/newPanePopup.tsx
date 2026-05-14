@@ -42,6 +42,7 @@ import { pathToFileURL } from "url"
 
 const PROJECT_PATH_ARG = process.argv[3]
 const ENABLE_GIT_OPTIONS_ARG = process.argv[4] === '1'
+const DEFAULT_GOAL_MODE_ARG = process.argv[5] === '1'
 const FILE_SCAN_ROOT = PROJECT_PATH_ARG || process.cwd()
 const PROJECT_NAME = path.basename(FILE_SCAN_ROOT)
 const ESC_CLEAR_CONFIRMATION_MS = 500
@@ -60,6 +61,7 @@ function debugLog(message: string, data?: any) {
 
 export const NewPanePopupApp: React.FC<{ resultFile: string }> = ({ resultFile }) => {
   const [prompt, setPrompt] = useState("")
+  const [goalMode, setGoalMode] = useState(DEFAULT_GOAL_MODE_ARG)
   const [mode, setMode] = useState<'prompt' | 'gitOptions'>('prompt')
   const [baseBranch, setBaseBranch] = useState("")
   const [branchName, setBranchName] = useState("")
@@ -100,8 +102,9 @@ export const NewPanePopupApp: React.FC<{ resultFile: string }> = ({ resultFile }
       return
     }
 
-    const payload: { prompt: string; baseBranch?: string; branchName?: string } = {
+    const payload: { prompt: string; baseBranch?: string; branchName?: string; goalMode: boolean } = {
       prompt,
+      goalMode,
     }
 
     const trimmedBranchName = branchName.trim()
@@ -386,6 +389,11 @@ export const NewPanePopupApp: React.FC<{ resultFile: string }> = ({ resultFile }
     // 2. If text is present, arm a clear, then clear on a second ESC
     // 3. If no text, allow PopupWrapper to close the popup
 
+    if (key.ctrl && input === 'g') {
+      setGoalMode((current) => !current)
+      return
+    }
+
     // With git options enabled, Tab/Shift+Tab also cycle into git fields
     // from the prompt editor when file autocomplete is not active.
     if (ENABLE_GIT_OPTIONS_ARG && !isFileListActive && (isForwardTab || isBackTab)) {
@@ -482,7 +490,7 @@ export const NewPanePopupApp: React.FC<{ resultFile: string }> = ({ resultFile }
       return
     }
 
-    writeSuccessAndExit(resultFile, { prompt: nextPrompt }, exit)
+    writeSuccessAndExit(resultFile, { prompt: nextPrompt, goalMode }, exit)
   }
 
   const shouldAllowCancel = () => {
@@ -527,7 +535,7 @@ export const NewPanePopupApp: React.FC<{ resultFile: string }> = ({ resultFile }
     >
       <PopupContainer
         footer={mode === 'prompt'
-          ? PopupFooters.input()
+          ? `${PopupFooters.input()} • Ctrl+G goal`
           : '↑↓ branch list • Tab/Shift+Tab cycle fields • Enter select/create • ESC progressive back'}
       >
         {mode === 'prompt' && (
@@ -571,6 +579,12 @@ export const NewPanePopupApp: React.FC<{ resultFile: string }> = ({ resultFile }
                 onCursorChange={setCurrentCursor}
                 ignoreFocus={true}
               />
+            </Box>
+
+            <Box marginTop={1}>
+              <Text color={goalMode ? POPUP_CONFIG.titleColor : undefined}>
+                {goalMode ? '[x]' : '[ ]'} Goal mode
+              </Text>
             </Box>
 
             {/* File list (shown when @ is detected) */}

@@ -91,6 +91,7 @@ process.stdin.on('end', () => {
     expectedTmuxPaneId: '${escapeForSingleQuotedJs(opts.tmuxPaneId)}',
     hookEventName: payload.hook_event_name || payload.hookEventName || '',
     turnId: payload.turn_id || payload.turnId || '',
+    stopHookActive: payload.stop_hook_active === true || payload.stopHookActive === true,
     lastAssistantMessage: payload.last_assistant_message || null,
     transcriptPath: payload.transcript_path || null,
     cwd: payload.cwd || process.cwd(),
@@ -161,8 +162,20 @@ export function buildCodexPaneExportSnippet(opts: {
     .join('; ');
 }
 
+export const CODEX_ENABLE_HOOKS_FLAG = '--enable hooks';
+export const CODEX_ENABLE_GOALS_FLAG = '--enable goals';
+
 export function enableCodexHooksFlag(command: string): string {
-  return command.replace(/(^|;\s*)codex(?=\s|$)/, '$1codex --enable codex_hooks');
+  return enableCodexFeatureFlags(command, [CODEX_ENABLE_HOOKS_FLAG]);
+}
+
+export function enableCodexFeatureFlags(command: string, flags: string[]): string {
+  const flagsToAdd = flags.filter((flag) => !command.includes(flag));
+  if (flagsToAdd.length === 0) {
+    return command;
+  }
+
+  return command.replace(/(^|;\s*)codex(?=\s|$)/, `$1codex ${flagsToAdd.join(' ')}`);
 }
 
 export function buildCodexHookedCommand(
@@ -171,7 +184,14 @@ export function buildCodexHookedCommand(
     dmuxPaneId: string;
     tmuxPaneId: string;
     eventFile?: string;
-  }
+  },
+  featureOptions: {
+    enableGoals?: boolean;
+  } = {}
 ): string {
-  return `${buildCodexPaneExportSnippet(opts)}; ${enableCodexHooksFlag(command)}`;
+  const flags = [
+    CODEX_ENABLE_HOOKS_FLAG,
+    ...(featureOptions.enableGoals ? [CODEX_ENABLE_GOALS_FLAG] : []),
+  ];
+  return `${buildCodexPaneExportSnippet(opts)}; ${enableCodexFeatureFlags(command, flags)}`;
 }

@@ -15,6 +15,7 @@ export function resolveDmuxExecutable(projectRoot?: string): string {
 export function buildDmuxCommand(args: string[] = [], projectRoot?: string): string {
   const pathValue = sanitizePathForInstalledDmux(process.env.PATH || '', projectRoot);
   return [
+    'env',
     `PATH=${shellQuote(pathValue)}`,
     shellQuote(resolveDmuxExecutable(projectRoot)),
     ...args,

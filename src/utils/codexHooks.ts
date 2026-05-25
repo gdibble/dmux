@@ -9,10 +9,6 @@ export interface CodexHookInstallResult {
 
 type ShellAssignment = [key: string, value: string];
 
-function escapeForSingleQuotedJs(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-}
-
 function mergeDmuxStopHook(hooksPath: string, hookCommand: string): void {
   let hooksConfig: any = {};
   if (fs.existsSync(hooksPath)) {
@@ -67,8 +63,13 @@ export function installCodexPaneHooks(opts: {
 
   const eventFile = path.join(stateDir, `${opts.dmuxPaneId}.json`);
   const hookScriptPath = path.join(hookDir, 'dmux-stop-hook.cjs');
+  const hookCommandPath = path.join('.codex', 'hooks', 'dmux-stop-hook.cjs');
   const hookScript = `#!/usr/bin/env node
 const fs = require('fs');
+
+function finish(payload = {}) {
+  process.stdout.write(JSON.stringify(payload));
+}
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -87,8 +88,6 @@ process.stdin.on('end', () => {
     source: 'codex-stop-hook',
     dmuxPaneId: process.env.DMUX_PANE_ID || '',
     tmuxPaneId: process.env.DMUX_TMUX_PANE_ID || '',
-    expectedDmuxPaneId: '${escapeForSingleQuotedJs(opts.dmuxPaneId)}',
-    expectedTmuxPaneId: '${escapeForSingleQuotedJs(opts.tmuxPaneId)}',
     hookEventName: payload.hook_event_name || payload.hookEventName || '',
     turnId: payload.turn_id || payload.turnId || '',
     stopHookActive: payload.stop_hook_active === true || payload.stopHookActive === true,
@@ -99,27 +98,31 @@ process.stdin.on('end', () => {
   };
 
   if (event.hookEventName && event.hookEventName !== 'Stop') {
-    process.exit(0);
+    finish();
+    return;
   }
 
-  if (event.dmuxPaneId !== event.expectedDmuxPaneId) {
-    process.exit(0);
+  const eventFile = process.env.DMUX_CODEX_HOOK_EVENT_FILE || '';
+  if (!event.dmuxPaneId || !eventFile) {
+    finish();
+    return;
   }
 
   try {
-    fs.writeFileSync('${escapeForSingleQuotedJs(eventFile)}', JSON.stringify(event, null, 2));
+    fs.writeFileSync(eventFile, JSON.stringify(event, null, 2));
   } catch (error) {
-    process.exit(0);
+    finish();
+    return;
   }
 
-  process.stdout.write(JSON.stringify({ continue: true }));
+  finish();
 });
 `;
   atomicWriteFileSync(hookScriptPath, hookScript);
   fs.chmodSync(hookScriptPath, 0o755);
 
   const hooksPath = path.join(codexDir, 'hooks.json');
-  mergeDmuxStopHook(hooksPath, `node ${shellQuote(hookScriptPath)}`);
+  mergeDmuxStopHook(hooksPath, `node ${shellQuote(hookCommandPath)}`);
 
   return { eventFile };
 }

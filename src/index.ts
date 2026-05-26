@@ -34,9 +34,9 @@ import {
 } from './utils/tmuxHookCommands.js';
 import { ensureTmuxRuntimeCompatibility } from './utils/tmuxRuntimeCompatibility.js';
 import { claimProcessShutdown } from './utils/processShutdown.js';
-import { sendTmuxShellCommand } from './utils/tmuxSendKeys.js';
 import { buildDmuxCommand } from './utils/dmuxCommand.js';
 import { sanitizePathForInstalledDmux } from './utils/pathEnvironment.js';
+import { attachTmuxSession, startDetachedTmuxSession } from './utils/tmuxSessionStart.js';
 import {
   addSidebarProject,
   getAutoSidebarProjectColorTheme,
@@ -310,16 +310,8 @@ class Dmux {
         }
       } else {
         // Expected - session doesn't exist, create new one
-        // Create new session first
-        execSync(`tmux new-session -d -s ${this.sessionName}`, { stdio: 'inherit' });
-        ensureTmuxRuntimeCompatibility(this.sessionName);
-        this.setSessionPathEnvironment(this.sessionName);
-        // Batch all session configuration commands into a single tmux call for faster startup
-        // This reduces 5 process spawns to 1, significantly improving startup time
-        this.applySessionPaneBorderOptions(this.sessionName, 'inherit');
-        execSync(`tmux select-pane -t ${this.sessionName} -T "dmux"`, { stdio: 'inherit' });
-        // Send dmux command to the new session (use dev command if in dev mode)
-        // Determine the dmux command to use
+        // Start dmux as the pane command instead of typing a long startup
+        // command into a shell before that shell has finished initializing.
         let dmuxCommand: string;
         if (isDev) {
           dmuxCommand = buildDevWatchCommand(devDirectory);
@@ -327,9 +319,19 @@ class Dmux {
           dmuxCommand = buildDmuxCommand([], this.projectRoot);
         }
 
-        sendTmuxShellCommand(this.sessionName, dmuxCommand, 'inherit');
+        startDetachedTmuxSession({
+          sessionName: this.sessionName,
+          startDirectory: isDev ? devDirectory : this.projectRoot,
+          command: dmuxCommand,
+        });
+        ensureTmuxRuntimeCompatibility(this.sessionName);
+        this.setSessionPathEnvironment(this.sessionName);
+        // Batch all session configuration commands into a single tmux call for faster startup
+        // This reduces 5 process spawns to 1, significantly improving startup time
+        this.applySessionPaneBorderOptions(this.sessionName, 'inherit');
+        execSync(`tmux select-pane -t ${this.sessionName} -T "dmux"`, { stdio: 'inherit' });
       }
-      execSync(`tmux attach-session -t ${this.sessionName}`, { stdio: 'inherit' });
+      attachTmuxSession(this.sessionName);
       return;
     }
 

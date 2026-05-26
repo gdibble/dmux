@@ -636,7 +636,7 @@ describe('Pane Lifecycle Integration Tests', () => {
       expect(destroyWelcomePaneCoordinatedMock).toHaveBeenCalledWith('/test');
     });
 
-    it('should handle slug generation failure (fallback to timestamp)', async () => {
+    it('should handle slug generation failure with a prompt-based fallback', async () => {
       // Mock OpenRouter API failure
       const mockFetch = vi.fn(() =>
         Promise.reject(new Error('API timeout'))
@@ -655,9 +655,9 @@ describe('Pane Lifecycle Integration Tests', () => {
         ['claude']
       );
 
-      // Should fallback to timestamp-based slug
+      // Should fallback to a useful local slug instead of a timestamp
       if ('pane' in result) {
-        expect(result.pane.slug).toMatch(/dmux-\d+/);
+        expect(result.pane.slug).toBe('test-prompt');
       }
     });
 

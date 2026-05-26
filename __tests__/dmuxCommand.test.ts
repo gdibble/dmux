@@ -40,10 +40,10 @@ describe('dmux command resolution', () => {
 
     try {
       expect(buildDmuxCommand([], projectRoot)).toBe(
-        `PATH='${installedBin}' '${path.join(installedBin, 'dmux')}'`
+        `env PATH='${installedBin}' '${path.join(installedBin, 'dmux')}'`
       );
       expect(buildFilesOnlyCommand(projectRoot)).toBe(
-        `PATH='${installedBin}' '${path.join(installedBin, 'dmux')}' --files-only`
+        `env PATH='${installedBin}' '${path.join(installedBin, 'dmux')}' --files-only`
       );
       expect(sanitizePathForInstalledDmux(process.env.PATH, projectRoot)).toBe(installedBin);
     } finally {
@@ -51,4 +51,3 @@ describe('dmux command resolution', () => {
     }
   });
 });
-

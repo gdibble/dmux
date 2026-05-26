@@ -15,10 +15,10 @@ const shellQuote = (value: string): string =>
 export function buildDevWatchCommand(sourcePath: string): string {
   const escapedPath = escapeForDoubleQuotedShell(sourcePath);
   const cleanPath = sanitizePathForInstalledDmux(process.env.PATH || '', sourcePath);
-  return `cd "${escapedPath}" && PATH=${shellQuote(cleanPath)} pnpm dev:watch`;
+  return `cd "${escapedPath}" && env PATH=${shellQuote(cleanPath)} pnpm dev:watch`;
 }
 
 export function buildDevWatchRespawnCommand(sourcePath: string): string {
   const cleanPath = sanitizePathForInstalledDmux(process.env.PATH || '', sourcePath);
-  return `${buildDevWatchCommand(sourcePath)}; export PATH=${shellQuote(cleanPath)}; exec "\${SHELL:-/bin/zsh}" -l`;
+  return `${buildDevWatchCommand(sourcePath)}; exec env PATH=${shellQuote(cleanPath)} "\${SHELL:-/bin/zsh}" -l`;
 }

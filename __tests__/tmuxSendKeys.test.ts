@@ -15,7 +15,7 @@ describe('sendTmuxShellCommand', () => {
     spawnSyncMock.mockReset();
   });
 
-  it('passes startup commands as a single tmux argument', () => {
+  it('passes shell commands as a single tmux argument', () => {
     spawnSyncMock.mockReturnValue({ status: 0 });
     const commandWithSpaces = '"/Users/me/Library/Application Support/fnm/bin/dmux"';
 

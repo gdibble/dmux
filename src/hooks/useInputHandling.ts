@@ -1168,6 +1168,33 @@ export function useInputHandling(params: UseInputHandlingParams) {
     showFileCopyPrompt,
   ])
 
+  // Activate a sidebar item the same way Enter does: pane rows open the pane
+  // menu, action buttons run their action. Used by mouse double-click.
+  const activateItemAtIndex = async (index: number) => {
+    if (ignoreInput || isCreatingPane || runningCommand || isUpdating || isLoading) {
+      return
+    }
+
+    const pane = panes[index]
+    if (pane) {
+      await openPaneMenu(pane)
+      return
+    }
+
+    const selectedAction = getProjectActionByIndex(projectActionItems, index)
+    if (!selectedAction) {
+      return
+    }
+
+    if (selectedAction.kind === "new-agent") {
+      await handleCreateAgentPane(selectedAction.projectRoot)
+    } else if (selectedAction.kind === "terminal") {
+      await handleCreateTerminalPane(selectedAction.projectRoot)
+    } else if (selectedAction.kind === "remove-project") {
+      await handleRemoveProjectFromSidebar(selectedAction.projectRoot)
+    }
+  }
+
   useInput(async (input: string, key: any) => {
     // Ignore input temporarily after popup operations (prevents buffered keys from being processed)
     if (ignoreInput) {
@@ -1524,4 +1551,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
   })
+
+  return { activateItemAtIndex }
 }

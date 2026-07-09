@@ -1,5 +1,6 @@
 import type { AgentName, PermissionMode } from './utils/agentLaunch.js';
 import type { NotificationSoundId } from './utils/notificationSounds.js';
+import type { SidebarMouseEventSource } from './utils/sidebarMouse.js';
 
 export type DmuxThemeName =
   | 'red'
@@ -175,6 +176,8 @@ export interface DmuxAppProps {
   settingsFile: string;
   autoUpdater?: any; // AutoUpdater instance
   controlPaneId?: string; // Pane ID running dmux TUI (left sidebar)
+  mouseEvents?: SidebarMouseEventSource; // Sidebar click/wheel events (mouse sequences are filtered out of Ink's stdin)
+  mouseRowBaseline?: number; // Pane history size when the Ink frame was first drawn
 }
 
 export interface DmuxConfig {

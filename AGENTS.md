@@ -33,6 +33,7 @@ Core behavior:
 - `src/actions/types.ts`: action registry and menu visibility rules
 - `src/actions/implementations/closeAction.ts`: close behavior + source fallback on source-pane removal
 - `src/components/panes/*`: pane list rendering (includes source indicator)
+- `src/utils/sidebarMouse.ts` + `src/hooks/useSidebarMouse.ts`: sidebar mouse support; mouse escape sequences are stripped from Ink's stdin via a proxy stream and re-emitted as events. Click highlights a row without changing tmux pane focus, double-click activates it (pane menu / action button), wheel steps the selection. `kebabMenuPopup` uses the same scheme so menu items are clickable
 
 ## Native helper
 

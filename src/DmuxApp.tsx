@@ -19,10 +19,12 @@ import { useInputHandling } from "./hooks/useInputHandling.js"
 import { useDialogState } from "./hooks/useDialogState.js"
 import { useDebugInfo } from "./hooks/useDebugInfo.js"
 import { useProjectActivity } from "./hooks/useProjectActivity.js"
+import useSidebarMouse from "./hooks/useSidebarMouse.js"
+import { getPaneHistorySize } from "./utils/sidebarScrollOffset.js"
 
 // Utils
 import { SIDEBAR_WIDTH } from "./utils/layoutManager.js"
-import { supportsPopups } from "./utils/popup.js"
+import { supportsPopups, ensureMouseMode } from "./utils/popup.js"
 import { StateManager } from "./shared/StateManager.js"
 import {
   STATUS_MESSAGE_DURATION_SHORT,
@@ -120,6 +122,8 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   projectRoot,
   autoUpdater,
   controlPaneId,
+  mouseEvents,
+  mouseRowBaseline,
 }) => {
   const { stdout } = useStdout()
   const terminalHeight = stdout?.rows || 40
@@ -519,11 +523,13 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   // Load panes and settings on mount and refresh periodically
   useEffect(() => {
-    // Check if tmux supports popups (3.2+) and enable mouse mode for click-outside-to-close
+    // Check if tmux supports popups (3.2+)
     const popupSupport = supportsPopups()
     setPopupsSupported(popupSupport)
-    if (popupSupport) {
-      // Enable mouse mode only for this dmux session (not global)
+    if (process.env.TMUX) {
+      // Enable mouse mode for this dmux session only (not global) so tmux
+      // forwards clicks in the sidebar to the app for click-to-select.
+      ensureMouseMode(sessionName)
     }
   }, [])
 
@@ -1507,7 +1513,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   )
 
   // Input handling - extracted to dedicated hook
-  useInputHandling({
+  const { activateItemAtIndex } = useInputHandling({
     panes,
     selectedIndex,
     setSelectedIndex,
@@ -1554,6 +1560,33 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     activeProjectRoot: selectedProjectRoot,
     projectActionItems: projectActionLayout.actionItems,
     findCardInDirection,
+  })
+
+  // Mouse support in the sidebar: click highlights a row without changing
+  // tmux pane focus, double-click activates it (pane menu / action button),
+  // wheel steps the selection.
+  useSidebarMouse({
+    mouseEvents,
+    enabled:
+      !ignoreInput &&
+      !showCommandPrompt &&
+      !showFileCopyPrompt &&
+      !showHooksPrompt &&
+      !quitConfirmMode,
+    layout: projectActionLayout,
+    isLoading,
+    activeProjectRoot,
+    getRowOffset: () =>
+      getPaneHistorySize(controlPaneId) - (mouseRowBaseline ?? 0),
+    onSelectIndex: setSelectedIndex,
+    onActivateIndex: (index) => {
+      void activateItemAtIndex(index)
+    },
+    onWheel: (direction) => {
+      setSelectedIndex((currentIndex) =>
+        findCardInDirection(currentIndex, direction) ?? currentIndex
+      )
+    },
   })
 
   // Calculate available height for content (terminal height - footer lines - active status messages)

@@ -38,6 +38,12 @@ import { buildDmuxCommand } from './utils/dmuxCommand.js';
 import { sanitizePathForInstalledDmux } from './utils/pathEnvironment.js';
 import { attachTmuxSession, startDetachedTmuxSession } from './utils/tmuxSessionStart.js';
 import {
+  createMouseFilteredStdin,
+  MOUSE_REPORTING_ENABLE,
+  MOUSE_REPORTING_DISABLE,
+} from './utils/sidebarMouse.js';
+import { getPaneHistorySize } from './utils/sidebarScrollOffset.js';
+import {
   addSidebarProject,
   getAutoSidebarProjectColorTheme,
   getSidebarProjectColorTheme,
@@ -635,6 +641,17 @@ class Dmux {
     // Ensure cursor is truly at home position and scrollback is clear
     process.stdout.write('\x1b[1;1H');  // Force cursor to row 1, column 1
 
+    // Sidebar mouse support: hand Ink a stdin proxy with mouse escape
+    // sequences filtered out, and surface them as click/wheel events instead.
+    const mouseFilter = process.stdin.isTTY ? createMouseFilteredStdin(process.stdin) : null;
+    if (mouseFilter) {
+      process.stdout.write(MOUSE_REPORTING_ENABLE);
+    }
+
+    // Snapshot pane history before Ink draws its first frame; any growth
+    // afterwards is frame drift that click coordinates must compensate for.
+    const mouseRowBaseline = mouseFilter ? getPaneHistorySize(controlPaneId) : 0;
+
     // Launch the Ink app
     const appProps = {
       panesFile: this.panesFile,
@@ -644,14 +661,21 @@ class Dmux {
       projectRoot: this.projectRoot,
       autoUpdater: this.autoUpdater,
       controlPaneId,
+      mouseEvents: mouseFilter?.events,
+      mouseRowBaseline,
     };
 
     const app = render(React.createElement(DmuxApp, appProps), {
-      exitOnCtrlC: false  // Disable automatic exit on Ctrl+C
+      exitOnCtrlC: false,  // Disable automatic exit on Ctrl+C
+      ...(mouseFilter ? { stdin: mouseFilter.stdin } : {}),
     });
 
     // Clean shutdown on app exit
     app.waitUntilExit().then(async () => {
+      if (mouseFilter) {
+        process.stdout.write(MOUSE_REPORTING_DISABLE);
+        mouseFilter.detach();
+      }
       process.exit(0);
     });
   }
@@ -1383,6 +1407,12 @@ class Dmux {
         return;
       }
       isCleaningUp = true;
+
+      // Turn off terminal mouse reporting so the pane's shell doesn't
+      // receive click escape sequences after dmux exits.
+      if (process.stdout.isTTY) {
+        process.stdout.write(MOUSE_REPORTING_DISABLE);
+      }
 
       // Clean up hooks
       if (process.env.TMUX) {

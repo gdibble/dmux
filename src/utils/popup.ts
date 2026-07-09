@@ -638,12 +638,24 @@ export function ensureMouseMode(sessionName: string): void {
   try {
     const tmuxService = TmuxService.getInstance();
 
-    // Check if mouse mode is already enabled for this session
-    const mouseStatus = tmuxService.getSessionOptionSync(sessionName, 'mouse');
+    // dmux may be running inside a session whose name differs from the
+    // project-scoped one (e.g. launched in an existing session), so target
+    // the session this process actually lives in when it can be resolved.
+    let targetSession = sessionName;
+    try {
+      targetSession = tmuxService.getCurrentSessionNameSync().trim() || sessionName;
+    } catch {
+      // Fall back to the provided session name.
+    }
 
-    // If mouse is off, enable it for this session only (not global)
-    if (mouseStatus.includes('off')) {
-      tmuxService.setSessionOptionSync(sessionName, 'mouse', 'on');
+    // Session-level value when set, otherwise the inherited global value.
+    // An unset option reads as an empty string, which tmux treats as off.
+    const sessionStatus = tmuxService.getSessionOptionSync(targetSession, 'mouse').trim();
+    const effectiveStatus = sessionStatus || tmuxService.getGlobalOptionSync('mouse');
+
+    // If mouse is not on, enable it for this session only (not global)
+    if (!effectiveStatus.includes('on')) {
+      tmuxService.setSessionOptionSync(targetSession, 'mouse', 'on');
     }
   } catch {
     // Ignore errors - might not be in tmux session or session doesn't exist yet
